@@ -29,6 +29,10 @@ jobs:
       - name: Make mvnw executable
         run: chmod +x mvnw
 
+      - name: Build required local dependencies (skip tests)
+        run: |
+          ./mvnw -pl testsuite/model -am -DskipTests install
+
       - name: Run tests for testsuite/model (includes our added tests)
         run: |
           ./mvnw -pl testsuite/model -Pjpa test
