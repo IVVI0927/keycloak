@@ -20,11 +20,13 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import jakarta.mail.MessagingException;
 import jakarta.mail.internet.MimeMessage;
 
+import org.keycloak.TokenVerifier;
 import org.keycloak.admin.client.resource.ClientResource;
 import org.keycloak.admin.client.resource.UserResource;
 import org.keycloak.authentication.actiontoken.resetcred.ResetCredentialsActionToken;
@@ -32,11 +34,14 @@ import org.keycloak.authentication.authenticators.resetcred.ResetCredentialEmail
 import org.keycloak.common.constants.ServiceAccountConstants;
 import org.keycloak.common.util.KeycloakUriBuilder;
 import org.keycloak.common.util.MultivaluedHashMap;
+import org.keycloak.common.util.UriUtils;
 import org.keycloak.events.Details;
 import org.keycloak.events.Errors;
 import org.keycloak.events.EventType;
 import org.keycloak.models.AuthenticationExecutionModel;
 import org.keycloak.models.Constants;
+import org.keycloak.models.DefaultActionTokenKey;
+import org.keycloak.models.SingleUseObjectProvider;
 import org.keycloak.models.credential.PasswordCredentialModel;
 import org.keycloak.models.utils.DefaultAuthenticationFlows;
 import org.keycloak.models.utils.SystemClientUtil;
@@ -65,6 +70,7 @@ import org.keycloak.testsuite.pages.LoginPage;
 import org.keycloak.testsuite.pages.LoginPasswordResetPage;
 import org.keycloak.testsuite.pages.LoginPasswordUpdatePage;
 import org.keycloak.testsuite.pages.LogoutConfirmPage;
+import org.keycloak.testsuite.pages.PageUtils;
 import org.keycloak.testsuite.updaters.ClientAttributeUpdater;
 import org.keycloak.testsuite.util.AccountHelper;
 import org.keycloak.testsuite.util.BrowserTabUtil;
@@ -96,8 +102,11 @@ import org.openqa.selenium.WebElement;
 import org.openqa.selenium.firefox.FirefoxDriver;
 import org.openqa.selenium.htmlunit.HtmlUnitDriver;
 
+import static org.keycloak.protocol.oidc.par.endpoints.ParEndpoint.REQUEST_URI_PREFIX;
+
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.endsWith;
+import static org.hamcrest.Matchers.is;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 
@@ -342,6 +351,35 @@ public class ResetPasswordTest extends AbstractTestRealmKeycloakTest {
     @Test
     public void resetPasswordTwice() throws IOException {
         String changePasswordUrl = resetPassword("login-test");
+        events.clear();
+
+        assertSecondPasswordResetFails(changePasswordUrl, oauth.getClientId()); // KC_RESTART doesn't exist, it was deleted after first successful reset-password flow was finished
+    }
+
+    @Test
+    public void resetPasswordTwiceWithPARRequestInBetween() throws Exception {
+        String changePasswordUrl = resetPassword("login-test");
+        events.clear();
+
+        // Try to create manually the cache key from actionToken
+        String queryString = changePasswordUrl.substring(changePasswordUrl.indexOf("?") + 1);
+        MultivaluedHashMap<String, String> params = UriUtils.decodeQueryString(queryString);
+        String key = params.getFirst(Constants.KEY);
+        TokenVerifier<DefaultActionTokenKey> tokenVerifier = TokenVerifier.create(key, DefaultActionTokenKey.class);
+        DefaultActionTokenKey aToken = tokenVerifier.getToken();
+        String serializedKey1 = aToken.serializeKey();
+        String serializedKey2 = serializedKey1 + SingleUseObjectProvider.REVOKED_KEY;
+
+        // Try to send PAR request with manually created requestUri related to the manually created serialized keys
+        String state = "testSuccessfulSinglePar";
+        oauth.loginForm()
+                .requestUri(REQUEST_URI_PREFIX + serializedKey1)
+                .state(state)
+                .open();
+        oauth.loginForm()
+                .requestUri(REQUEST_URI_PREFIX + serializedKey2)
+                .state(state)
+                .open();
         events.clear();
 
         assertSecondPasswordResetFails(changePasswordUrl, oauth.getClientId()); // KC_RESTART doesn't exist, it was deleted after first successful reset-password flow was finished
@@ -1239,6 +1277,44 @@ public class ResetPasswordTest extends AbstractTestRealmKeycloakTest {
             resetPassword("login-test", password);
         } finally {
             setTimeOffset(0);
+        }
+    }
+
+
+    @Test
+    public void resetPasswordLinkOpenedInNewBrowserWithDifferentLcoales() {
+        // given
+        String resetUri = oauth.AUTH_SERVER_ROOT + "/realms/test/login-actions/reset-credentials";
+        RealmRepresentation realmRep = testRealm().toRepresentation();
+
+        String origDefaultLocale = realmRep.getDefaultLocale();
+        Set<String> origSupportedLocales = realmRep.getSupportedLocales();
+        try {
+            realmRep.setDefaultLocale("en");
+            realmRep.addSupportedLocales("de");
+            realmRep.addSupportedLocales("it");
+            testRealm().update(realmRep);
+
+            // when
+            driver.navigate().to(resetUri);
+            // then
+            assertThat(PageUtils.getPageTitle(driver), is("Forgot Your Password?"));
+
+            // when
+            driver.manage().deleteAllCookies();
+            driver.navigate().to(resetUri + "?kc_locale=de");
+            // then
+            assertThat(PageUtils.getPageTitle(driver), is("Passwort vergessen?"));
+
+            // when
+            driver.manage().deleteAllCookies();
+            driver.navigate().to(resetUri + "?kc_locale=it");
+            // then
+            assertThat(PageUtils.getPageTitle(driver), is("Password dimenticata?"));
+        } finally {
+            realmRep.setDefaultLocale(origDefaultLocale);
+            realmRep.setSupportedLocales(origSupportedLocales);
+            testRealm().update(realmRep);
         }
     }
 

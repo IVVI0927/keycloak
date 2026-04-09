@@ -167,6 +167,41 @@ public class LDAPUserProfileTest extends AbstractLDAPTest {
     }
 
     @Test
+    public void testUserProfileWithMetadataAttributeDefinedInUserProfileConfig() {
+        UPConfig origConfig = testRealm().users().userProfile().getConfiguration();
+        try {
+            UPConfig config = testRealm().users().userProfile().getConfiguration();
+
+            for (String attrName : List.of(LDAPConstants.LDAP_ID, LDAPConstants.LDAP_ENTRY_DN)) {
+                UPAttribute attr = new UPAttribute();
+                attr.setName(attrName);
+                UPAttributePermissions permissions = new UPAttributePermissions();
+                permissions.setView(Set.of(UPConfigUtils.ROLE_ADMIN));
+                permissions.setEdit(Set.of(UPConfigUtils.ROLE_ADMIN));
+                attr.setPermissions(permissions);
+                config.getAttributes().add(attr);
+            }
+            testRealm().users().userProfile().update(config);
+
+            UserResource johnResource = ApiUtil.findUserByUsernameId(testRealm(), "johnkeycloak");
+            UserRepresentation john = johnResource.toRepresentation(true);
+            Assert.assertNotNull(john.getAttributes().get(LDAPConstants.LDAP_ENTRY_DN));
+            Assert.assertNotNull(john.getAttributes().get(LDAPConstants.LDAP_ID));
+            Assert.assertNotNull(john.getUserProfileMetadata());
+
+            UserProfileAttributeMetadata ldapIdMeta = john.getUserProfileMetadata().getAttributeMetadata(LDAPConstants.LDAP_ID);
+            Assert.assertNotNull(ldapIdMeta);
+            Assert.assertNull(ldapIdMeta.getGroup());
+
+            UserProfileAttributeMetadata ldapEntryDnMeta = john.getUserProfileMetadata().getAttributeMetadata(LDAPConstants.LDAP_ENTRY_DN);
+            Assert.assertNotNull(ldapEntryDnMeta);
+            Assert.assertNull(ldapEntryDnMeta.getGroup());
+        } finally {
+            testRealm().users().userProfile().update(origConfig);
+        }
+    }
+
+    @Test
     public void testUserProfileWithReadOnlyLdap() {
         // Test user profile of user johnkeycloak in admin console as well as account console. Check attributes are writable.
         setLDAPReadOnly();
@@ -436,6 +471,48 @@ public class LDAPUserProfileTest extends AbstractLDAPTest {
                 testRealm().update(realm);
             }
 
+        });
+    }
+
+    @Test
+    public void testUpdateEmailVerifiedWithReadOnlyLdapAndUpperCaseEmail() {
+        // Create an LDAP user with an uppercase email and set up read-only mode with always-read-from-LDAP
+        testingClient.server().run(session -> {
+            LDAPTestContext ctx = LDAPTestContext.init(session, "test-ldap");
+            RealmModel appRealm = ctx.getRealm();
+
+            LDAPObject user = LDAPTestUtils.addLDAPUser(ctx.getLdapProvider(), appRealm, "uppercaseemailuser", "Test", "User", "UPPERCASE@EMAIL.ORG", null, "1234");
+            LDAPTestUtils.updateLDAPPassword(ctx.getLdapProvider(), user, "Password1");
+        });
+
+        setLDAPReadOnly();
+        setEmailMapperAlwaysReadFromLDAP(true);
+        try {
+            // Fetch the user via admin API - email should be returned as lowercase
+            UserResource userResource = ApiUtil.findUserByUsernameId(testRealm(), "uppercaseemailuser");
+            UserRepresentation userRep = userResource.toRepresentation();
+            Assert.assertEquals("uppercase@email.org", userRep.getEmail());
+
+            // Update only emailVerified - this should succeed even though the email in LDAP is uppercase
+            userRep.setEmailVerified(true);
+            userResource.update(userRep);
+
+            userRep = userResource.toRepresentation();
+            Assert.assertTrue(userRep.isEmailVerified());
+        } finally {
+            setEmailMapperAlwaysReadFromLDAP(false);
+            setLDAPWritable();
+        }
+    }
+
+    private void setEmailMapperAlwaysReadFromLDAP(boolean alwaysRead) {
+        testingClient.server().run(session -> {
+            LDAPTestContext ctx = LDAPTestContext.init(session, "test-ldap");
+            RealmModel appRealm = ctx.getRealm();
+
+            ComponentModel emailMapper = LDAPTestUtils.getSubcomponentByName(appRealm, ctx.getLdapModel(), "email");
+            emailMapper.put(UserAttributeLDAPStorageMapper.ALWAYS_READ_VALUE_FROM_LDAP, alwaysRead);
+            appRealm.updateComponent(emailMapper);
         });
     }
 

@@ -25,6 +25,7 @@ import java.util.stream.Stream;
 import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.DefaultValue;
 import jakarta.ws.rs.GET;
+import jakarta.ws.rs.NotFoundException;
 import jakarta.ws.rs.POST;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
@@ -43,6 +44,7 @@ import org.keycloak.models.ModelDuplicateException;
 import org.keycloak.models.ModelException;
 import org.keycloak.models.OrganizationModel;
 import org.keycloak.models.RealmModel;
+import org.keycloak.models.utils.KeycloakModelUtils;
 import org.keycloak.models.utils.ModelToRepresentation;
 import org.keycloak.organization.OrganizationProvider;
 import org.keycloak.organization.utils.Organizations;
@@ -50,12 +52,14 @@ import org.keycloak.representations.idm.GroupRepresentation;
 import org.keycloak.services.ErrorResponse;
 import org.keycloak.services.resources.KeycloakOpenAPI;
 import org.keycloak.services.resources.admin.AdminEventBuilder;
+import org.keycloak.utils.GroupUtils;
 import org.keycloak.utils.SearchQueryUtils;
 
 import org.eclipse.microprofile.openapi.annotations.Operation;
 import org.eclipse.microprofile.openapi.annotations.extensions.Extension;
 import org.eclipse.microprofile.openapi.annotations.media.Content;
 import org.eclipse.microprofile.openapi.annotations.media.Schema;
+import org.eclipse.microprofile.openapi.annotations.parameters.Parameter;
 import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
 import org.eclipse.microprofile.openapi.annotations.responses.APIResponses;
 import org.eclipse.microprofile.openapi.annotations.tags.Tag;
@@ -81,51 +85,83 @@ public class OrganizationGroupsResource {
     @POST
     @Consumes(MediaType.APPLICATION_JSON)
     @Tag(name = KeycloakOpenAPI.Admin.Tags.ORGANIZATIONS)
-    @Operation(summary = "Creates a new top-level group in the organization",
-        description = "Adds a new group as a top-level group to the organization. " +
-                "If a group already exists or group with the same name already exists, an error response is returned.")
+    @Operation(summary = "Creates a new top-level group or moves an existing group to top-level",
+        description = "Creates a new top-level group in the organization. " +
+                "If the group representation includes an ID, moves the existing organization group to be a top-level group. " +
+                "If no ID is provided, creates a new top-level group.")
     @APIResponses(value = {
         @APIResponse(responseCode = "201", description = "Created"),
+        @APIResponse(responseCode = "204", description = "No Content - Group moved to top-level"),
         @APIResponse(responseCode = "400", description = "Bad Request"),
+        @APIResponse(responseCode = "404", description = "Not Found - Group does not exist"),
         @APIResponse(responseCode = "409", description = "Conflict")
     })
     public Response addTopLevelGroup(GroupRepresentation rep) {
         try {
-            // currently we do not support adding existing group
-            if (rep.getId() != null) {
-                if (session.groups().getGroupById(realm, rep.getId()) != null) {
-                    throw ErrorResponse.exists("Group with the given id already exists");
-                }
-            }
-
-            // name
             String groupName = rep.getName();
 
             if (ObjectUtil.isBlank(groupName)) {
                 throw ErrorResponse.error("Group name is missing", Response.Status.BAD_REQUEST);
             }
 
-            // create new org group
-            GroupModel group = organizationProvider.createGroup(organization, groupName, null);
+            Response.ResponseBuilder builder;
+            GroupModel group;
 
-            // set description and attributes
-            if (rep.getDescription() != null) {
-                group.setDescription(group.getDescription());
+            if (rep.getId() != null) {
+                // MOVE existing group to top-level
+                group = session.groups().getGroupById(realm, rep.getId());
+                if (group == null) {
+                    throw new NotFoundException("Could not find group by id");
+                }
+
+                // Validate it's an organization group
+                if (!GroupModel.Type.ORGANIZATION.equals(group.getType())) {
+                    throw ErrorResponse.error("Can only move organization groups", Response.Status.BAD_REQUEST);
+                }
+
+                // Validate it belongs to the same organization
+                if (!Organizations.isOrganizationGroup(group) ||
+                        !group.getOrganization().getId().equals(organization.getId())) {
+                    throw ErrorResponse.error("Group does not belong to this organization", Response.Status.BAD_REQUEST);
+                }
+
+                // Get internal org group (the real top-level parent for org groups)
+                GroupModel internalGroup = organizationProvider.getOrganizationGroup(organization);
+
+                // Move the group if it's not already a top-level group
+                if (!Objects.equals(group.getParentId(), internalGroup.getId())) {
+                    session.groups().moveGroup(realm, group, internalGroup);
+                }
+
+                builder = Response.status(204);
+                adminEvent.operation(OperationType.UPDATE);
+
+            } else {
+                // CREATE new top-level org group
+                group = organizationProvider.createGroup(organization, groupName, null);
+
+                // set description and attributes
+                if (rep.getDescription() != null) {
+                    group.setDescription(rep.getDescription());
+                }
+                if (rep.getAttributes() != null) {
+                    rep.getAttributes().forEach(group::setAttribute);
+                }
+
+                rep.setId(group.getId());
+
+                URI uri = session.getContext().getUri().getAbsolutePathBuilder()
+                        .path(group.getId()).build();
+                builder = Response.created(uri);
+                adminEvent.operation(OperationType.CREATE);
             }
-            if (rep.getAttributes() != null) {
-                rep.getAttributes().forEach(group::setAttribute);
-            }
 
-            rep.setId(group.getId());
-
-            adminEvent.operation(OperationType.CREATE)
-                    .resourcePath(session.getContext().getUri())
+            adminEvent.resourcePath(session.getContext().getUri())
                     .representation(rep)
                     .success();
 
-            URI uri = session.getContext().getUri().getAbsolutePathBuilder()
-                    .path(group.getId()).build();
-            return Response.created(uri).build();
+            GroupRepresentation groupRep = ModelToRepresentation.groupToBriefRepresentation(group);
+            return builder.type(MediaType.APPLICATION_JSON_TYPE).entity(groupRep).build();
 
         } catch (ModelDuplicateException mde) {
             throw ErrorResponse.exists("Group with the given name already exists.");
@@ -149,7 +185,10 @@ public class OrganizationGroupsResource {
                                                  @QueryParam("q") String searchQuery,
                                                  @QueryParam("exact") @DefaultValue("false") Boolean exact,
                                                  @QueryParam("first") Integer first,
-                                                 @QueryParam("max") Integer max) {
+                                                 @QueryParam("max") Integer max,
+                                                 @QueryParam("briefRepresentation") @DefaultValue("true") boolean briefRepresentation,
+                                                 @QueryParam("populateHierarchy") @DefaultValue("false") boolean populateHierarchy,
+                                                 @QueryParam("subGroupsCount") @DefaultValue("false") boolean subGroupsCount) {
         Stream<GroupModel> groups;
         if (Objects.nonNull(searchQuery)) {
             Map<String, String> attributes = SearchQueryUtils.getFields(searchQuery);
@@ -159,7 +198,22 @@ public class OrganizationGroupsResource {
         } else {
             groups = organizationProvider.getTopLevelGroups(organization, first, max);
         }
-        return groups.map(ModelToRepresentation::groupToBriefRepresentation);
+
+        // builds hierarchy mainly for admin UI
+        if (populateHierarchy) {
+            String internalGroupId = organizationProvider.getOrganizationGroup(organization).getId();
+            return GroupUtils.populateGroupHierarchyFromSubGroups(session, realm, groups, !briefRepresentation, subGroupsCount, internalGroupId);
+        }
+
+        return groups.map(group -> {
+            GroupRepresentation rep = briefRepresentation ?
+                    ModelToRepresentation.groupToBriefRepresentation(group) :
+                    ModelToRepresentation.toRepresentation(group, true);
+            if (subGroupsCount) {
+                rep.setSubGroupCount(group.getSubGroupsCount());
+            }
+            return rep;
+        });
     }
 
     @GET
@@ -174,9 +228,17 @@ public class OrganizationGroupsResource {
             @APIResponse(responseCode = "403", description = "Forbidden"),
             @APIResponse(responseCode = "404", description = "Not Found")
     })
-    public GroupRepresentation getGroupByPath(@PathParam("path") String path) {
-        // todo path
-        throw new UnsupportedOperationException("Not implemented yet");
+    public GroupRepresentation getGroupByPath(@PathParam("path") String path,
+                                              @Parameter(description = "Whether to return the count of subgroups (default: false)") @QueryParam("subGroupsCount") @DefaultValue("false") boolean subGroupsCount) {
+        GroupModel found = KeycloakModelUtils.findGroupByPath(session, realm, organization, path);
+        if (found == null) {
+            throw new NotFoundException("Group path does not exist");
+        }
+        GroupRepresentation rep = ModelToRepresentation.groupToBriefRepresentation(found);
+        if (subGroupsCount) {
+            rep.setSubGroupCount(found.getSubGroupsCount());
+        }
+        return rep;
     }
 
     @Path("{group-id}")

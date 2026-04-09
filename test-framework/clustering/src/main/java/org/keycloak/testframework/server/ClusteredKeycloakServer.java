@@ -25,7 +25,7 @@ import java.util.concurrent.TimeoutException;
 import org.keycloak.it.utils.DockerKeycloakDistribution;
 import org.keycloak.testframework.clustering.LoadBalancer;
 import org.keycloak.testframework.infinispan.CacheType;
-import org.keycloak.testframework.logging.JBossLogConsumer;
+import org.keycloak.testframework.logging.JBossContainerLogConsumer;
 
 import org.jboss.logging.Logger;
 import org.testcontainers.images.RemoteDockerImage;
@@ -75,6 +75,7 @@ public class ClusteredKeycloakServer implements KeycloakServer {
         } catch (TimeoutException e) {
             throw new RuntimeException("Expected %d cluster members".formatted(numServers), e);
         }
+        ReadinessProbe.waitUntilReady(this::getBaseUrl, numServers);
     }
 
     private void startContainersWithMixedImage(KeycloakServerConfigBuilder configBuilder, String[] imagePeServer, CountdownLatchLoggingConsumer clusterLatch) {
@@ -123,7 +124,7 @@ public class ClusteredKeycloakServer implements KeycloakServer {
     }
 
     private static void configureLogConsumers(DockerKeycloakDistribution container, int index, CountdownLatchLoggingConsumer clusterLatch) {
-        var logger = new JBossLogConsumer(Logger.getLogger("managed.keycloak." + index));
+        var logger = new JBossContainerLogConsumer(Logger.getLogger("managed.keycloak." + index));
         container.setCustomLogConsumer(logger.andThen(clusterLatch));
     }
 

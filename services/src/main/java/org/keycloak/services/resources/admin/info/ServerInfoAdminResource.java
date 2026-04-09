@@ -26,7 +26,9 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Properties;
 import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -50,6 +52,7 @@ import org.keycloak.events.EventType;
 import org.keycloak.events.admin.OperationType;
 import org.keycloak.events.admin.ResourceType;
 import org.keycloak.models.AdminRoles;
+import org.keycloak.models.GroupModel;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.RealmModel;
 import org.keycloak.models.utils.ModelToRepresentation;
@@ -84,6 +87,7 @@ import org.keycloak.representations.info.ThemeInfoRepresentation;
 import org.keycloak.services.managers.RealmManager;
 import org.keycloak.services.resources.KeycloakOpenAPI;
 import org.keycloak.services.resources.admin.AdminAuth;
+import org.keycloak.services.resources.admin.fgap.AdminPermissionEvaluator;
 import org.keycloak.services.resources.admin.fgap.AdminPermissions;
 import org.keycloak.theme.Theme;
 
@@ -98,7 +102,7 @@ import org.jboss.resteasy.reactive.NoCache;
 @Extension(name = KeycloakOpenAPI.Profiles.ADMIN , value = "")
 public class ServerInfoAdminResource {
 
-    private static final Map<String, List<String>> ENUMS = createEnumsMap(EventType.class, OperationType.class, ResourceType.class);
+    private static final Map<String, List<String>> ENUMS = createEnumsMap(EventType.class, OperationType.class, ResourceType.class, GroupModel.Type.class);
 
     private final KeycloakSession session;
     private final AdminAuth auth;
@@ -121,12 +125,17 @@ public class ServerInfoAdminResource {
     public ServerInfoRepresentation getInfo() {
         ServerInfoRepresentation info = new ServerInfoRepresentation();
         RealmModel userRealm = session.getContext().getRealm();
-        if (RealmManager.isAdministrationRealm(userRealm)
-                || AdminPermissions.evaluator(session, userRealm, auth).hasOneAdminRole(AdminRoles.VIEW_SYSTEM)) {
+        AdminPermissionEvaluator adminEvaluator = AdminPermissions.evaluator(session, userRealm, auth);
+        if (RealmManager.isAdministrationRealm(userRealm) || adminEvaluator.hasOneAdminRole(AdminRoles.VIEW_SYSTEM)) {
             // system information is only for admins in the administration realm or fallback view-system role
             info.setSystemInfo(SystemInfoRepresentation.create(session.getKeycloakSessionFactory().getServerStartupTimestamp(), Version.VERSION));
             info.setCpuInfo(CpuInfoRepresentation.create());
             info.setMemoryInfo(MemoryInfoRepresentation.create());
+        } else if (adminEvaluator.realm().canManageRealm()) {
+            // If the user can manage his own realm just add the version information
+            SystemInfoRepresentation systemInfo = new SystemInfoRepresentation();
+            systemInfo.setVersion(Version.VERSION);
+            info.setSystemInfo(systemInfo);
         }
         info.setProfileInfo(createProfileInfo());
         info.setFeatures(createFeatureRepresentations());
@@ -243,6 +252,8 @@ public class ServerInfoAdminResource {
                             ti.setLocales(locales.replaceAll(" ", "").split(","));
                         }
 
+                        ti.setDescription(getThemeDescription(theme));
+
                         themes.add(ti);
                     }
                 } catch (IOException e) {
@@ -250,6 +261,18 @@ public class ServerInfoAdminResource {
                 }
             }
         }
+    }
+
+    private String getThemeDescription(Theme theme) throws IOException {
+        Locale locale = session.getContext().resolveLocale(null);
+
+        Properties enhancedMessages = theme.getEnhancedMessages(session.getContext().getRealm(), locale);
+        if (enhancedMessages == null) {
+            return null;
+        }
+
+        String descriptionKey = "theme." + theme.getName() + "." + theme.getType().name().toLowerCase(Locale.ROOT) + ".description";
+        return enhancedMessages.getProperty(descriptionKey);
     }
 
     private LinkedList<String> filterThemes(Theme.Type type, LinkedList<String> themeNames) {
@@ -439,6 +462,7 @@ public class ServerInfoAdminResource {
         featureRep.setLabel(feature.getLabel());
         featureRep.setType(FeatureType.valueOf(feature.getType().name()));
         featureRep.setEnabled(isEnabled);
+        featureRep.setDeprecated(feature.isDeprecated());
         featureRep.setDependencies(feature.getDependencies() != null ?
                 feature.getDependencies().stream().map(Enum::name).collect(Collectors.toSet()) : Collections.emptySet());
         return featureRep;

@@ -10,13 +10,10 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.zip.GZIPInputStream;
 
-import org.keycloak.common.Profile;
 import org.keycloak.common.Version;
-import org.keycloak.platform.Platform;
 import org.keycloak.representations.idm.RealmRepresentation;
+import org.keycloak.services.resources.KeycloakApplication;
 import org.keycloak.testsuite.AbstractTestRealmKeycloakTest;
-import org.keycloak.testsuite.arquillian.annotation.EnableFeature;
-import org.keycloak.testsuite.arquillian.annotation.EnableFeatures;
 import org.keycloak.theme.Theme;
 
 import org.apache.commons.io.IOUtils;
@@ -132,7 +129,7 @@ public class ThemeResourceProviderTest extends AbstractTestRealmKeycloakTest {
         }
 
         testingClient.server().run(session -> {
-            String serverTmpDir = Platform.getPlatform().getTmpDirectory().toString();
+            String serverTmpDir = KeycloakApplication.getTmpDirectory().toString();
             assertTrue(Paths.get(serverTmpDir, "kc-gzip-cache", resourcesVersion, "welcome", "keycloak", "css", "welcome.css.gz").toFile().isFile());
         });
     }
@@ -144,7 +141,6 @@ public class ThemeResourceProviderTest extends AbstractTestRealmKeycloakTest {
     }
 
     @Test
-    @EnableFeatures(@EnableFeature(Profile.Feature.ROLLING_UPDATES_V2))
     public void fetchStaticResourceShouldRedirectOnUnknownVersion() throws IOException {
         final String resourcesVersion = testingClient.server().fetch(session -> Version.RESOURCES_VERSION, String.class);
         assertFound(suiteContext.getAuthServerInfo().getContextRoot().toString() + "/auth/resources/" + resourcesVersion + "/login/keycloak.v2/css/styles.css");
@@ -161,7 +157,6 @@ public class ThemeResourceProviderTest extends AbstractTestRealmKeycloakTest {
 
 
     @Test
-    @EnableFeatures(@EnableFeature(Profile.Feature.ROLLING_UPDATES_V2))
     public void fetchResourceWithContentHashShouldReturnContentIfVersionIsUnknown() throws IOException {
         final String resourcesVersion = testingClient.server().fetch(session -> Version.RESOURCES_VERSION, String.class);
 
@@ -175,7 +170,6 @@ public class ThemeResourceProviderTest extends AbstractTestRealmKeycloakTest {
     }
 
     @Test
-    @EnableFeatures(@EnableFeature(Profile.Feature.ROLLING_UPDATES_V2))
     public void fetchResourceWithContentHashShouldHonorEtag() throws IOException {
         String resource = getResourceWithContentHash();
 

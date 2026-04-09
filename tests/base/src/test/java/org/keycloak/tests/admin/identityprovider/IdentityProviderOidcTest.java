@@ -50,6 +50,7 @@ import org.keycloak.testframework.realm.RealmConfig;
 import org.keycloak.testframework.realm.RealmConfigBuilder;
 import org.keycloak.testframework.ui.annotations.InjectPage;
 import org.keycloak.testframework.ui.page.LoginPage;
+import org.keycloak.tests.suites.DatabaseTest;
 import org.keycloak.tests.utils.admin.AdminEventPaths;
 import org.keycloak.testsuite.util.broker.OIDCIdentityProviderConfigRep;
 import org.keycloak.testsuite.util.oauth.AccessTokenResponse;
@@ -98,6 +99,7 @@ public class IdentityProviderOidcTest extends AbstractIdentityProviderTest {
     }
 
     @Test
+    @DatabaseTest
     public void testCreate() {
         IdentityProviderRepresentation newIdentityProvider = createRep("new-identity-provider", "oidc");
 
@@ -319,6 +321,7 @@ public class IdentityProviderOidcTest extends AbstractIdentityProviderTest {
     }
 
     @Test
+    @DatabaseTest
     public void testUpdate() {
         IdentityProviderRepresentation newIdentityProvider = createRep("update-identity-provider", "oidc");
 
@@ -494,6 +497,7 @@ public class IdentityProviderOidcTest extends AbstractIdentityProviderTest {
 
         // Successful update when JWKS URL set
         oidcConfig.setJwksUrl("https://foo");
+        oidcConfig.setIssuer("https://foo");
         resource.update(representation);
 
         managedRealm.cleanup().add(r -> r.identityProviders().get(id).remove());
@@ -544,7 +548,7 @@ public class IdentityProviderOidcTest extends AbstractIdentityProviderTest {
                 .error(Errors.IDENTITY_PROVIDER_LOGIN_FAILURE);
 
         //test correct issuer
-        managedRealm.updateIdentityProviderWithCleanup("external-idp", rep -> {
+        managedRealm.updateIdentityProvider("external-idp", rep -> {
             rep.getConfig().put(OIDCIdentityProviderConfig.ISSUER, "http://localhost:8080/realms/external-realm");
         });
 

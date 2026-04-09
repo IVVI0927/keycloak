@@ -47,6 +47,8 @@ import org.keycloak.TokenVerifier;
 import org.keycloak.TokenVerifier.TokenTypeCheck;
 import org.keycloak.authentication.AuthenticationFlowException;
 import org.keycloak.authentication.AuthenticationProcessor;
+import org.keycloak.authentication.Authenticator;
+import org.keycloak.authentication.AuthenticatorFactory;
 import org.keycloak.authentication.AuthenticatorUtil;
 import org.keycloak.authentication.InitiatedActionSupport;
 import org.keycloak.authentication.RequiredActionContext;
@@ -88,6 +90,7 @@ import org.keycloak.models.SingleUseObjectProvider;
 import org.keycloak.models.UserConsentModel;
 import org.keycloak.models.UserModel;
 import org.keycloak.models.UserSessionModel;
+import org.keycloak.models.credential.OTPCredentialModel;
 import org.keycloak.models.utils.DefaultRequiredActions;
 import org.keycloak.models.utils.KeycloakModelUtils;
 import org.keycloak.models.utils.SessionExpirationUtils;
@@ -1088,6 +1091,7 @@ public class AuthenticationManager {
 
         if (authSession.getAuthNote(END_AFTER_REQUIRED_ACTIONS) != null) {
             LoginFormsProvider infoPage = session.getProvider(LoginFormsProvider.class).setAuthenticationSession(authSession)
+                    .setAttribute("messageHeader", Messages.ACCOUNT_UPDATED_TITLE)
                     .setSuccess(Messages.ACCOUNT_UPDATED);
             if (authSession.getAuthNote(SET_REDIRECT_URI_AFTER_REQUIRED_ACTIONS) != null) {
                 if (authSession.getRedirectUri() != null) {
@@ -1546,7 +1550,13 @@ public class AuthenticationManager {
             String kid = verifier.getHeader().getKeyId();
             String algorithm = verifier.getHeader().getAlgorithm().name();
 
-            SignatureVerifierContext signatureVerifier = session.getProvider(SignatureProvider.class, algorithm).verifier(kid);
+            SignatureProvider signatureProvider = session.getProvider(SignatureProvider.class, algorithm);
+            if (signatureProvider == null) {
+                logger.debugf("Invalid algorithm '%s' in the access token", algorithm);
+                return null;
+            }
+
+            SignatureVerifierContext signatureVerifier = signatureProvider.verifier(kid);
             verifier.verifierContext(signatureVerifier);
 
             AccessToken token = verifier.verify().getToken();
@@ -1723,9 +1733,22 @@ public class AuthenticationManager {
             UserModel user = lookupUserForBruteForceLog(session, realm, authSession);
             if (user != null) {
                 BruteForceProtector bruteForceProtector = session.getProvider(BruteForceProtector.class);
-                bruteForceProtector.successfulLogin(realm, user, session.getContext().getConnection(), session.getContext().getHttpRequest().getUri());
+                bruteForceProtector.successfulLogin(
+                        realm,
+                        user,
+                        session.getContext().getConnection(),
+                        session.getContext().getHttpRequest().getUri(),
+                        AuthenticatorUtil.getAuthnCredentials(authSession).contains(OTPCredentialModel.TYPE) ? OTPCredentialModel.TYPE : null
+                );
             }
         }
+    }
+
+    public static String getAuthenticationCategory(KeycloakSession session, String authenticator) {
+        if (authenticator == null) return null;
+
+        AuthenticatorFactory factory = (AuthenticatorFactory) session.getKeycloakSessionFactory().getProviderFactory(Authenticator.class, authenticator);
+        return factory != null ? factory.getReferenceCategory() : null;
     }
 
     public static UserModel lookupUserForBruteForceLog(KeycloakSession session, RealmModel realm, AuthenticationSessionModel authenticationSession) {

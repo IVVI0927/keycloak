@@ -22,10 +22,14 @@ import java.util.List;
 import jakarta.ws.rs.core.Response;
 import jakarta.ws.rs.core.Response.Status;
 
+import org.keycloak.admin.client.resource.ClientResource;
 import org.keycloak.admin.client.resource.OrganizationResource;
+import org.keycloak.representations.idm.ClientRepresentation;
 import org.keycloak.representations.idm.GroupRepresentation;
 import org.keycloak.representations.idm.MemberRepresentation;
 import org.keycloak.representations.idm.OrganizationRepresentation;
+import org.keycloak.representations.idm.authorization.GroupPolicyRepresentation;
+import org.keycloak.representations.idm.authorization.Logic;
 import org.keycloak.testsuite.admin.ApiUtil;
 import org.keycloak.testsuite.organization.admin.AbstractOrganizationTest;
 
@@ -100,18 +104,18 @@ public class OrganizationGroupIsolationTest extends AbstractOrganizationTest {
         }
 
         // Org A should only see its own groups
-        List<GroupRepresentation> orgAGroups = orgAResource.groups().getAll(null, null, 0, 10);
+        List<GroupRepresentation> orgAGroups = orgAResource.groups().getAll(null, null, null, 0, 10, true, false);
         assertThat(orgAGroups, hasSize(1));
         assertThat(orgAGroups.get(0).getName(), is("Engineering"));
 
         // Org B should only see its own groups
-        List<GroupRepresentation> orgBGroups = orgBResource.groups().getAll(null, null, 0, 10);
+        List<GroupRepresentation> orgBGroups = orgBResource.groups().getAll(null, null, null, 0, 10, true, false);
         assertThat(orgBGroups, hasSize(1));
         assertThat(orgBGroups.get(0).getName(), is("Sales"));
 
         // Org A cannot access Org B's group
         try {
-            orgAResource.groups().group(groupBId).toRepresentation();
+            orgAResource.groups().group(groupBId).toRepresentation(false);
             fail("Org A should not be able to access Org B's groups");
         } catch (Exception e) {
             assertThat(e.getMessage(), containsString(Status.BAD_REQUEST.toString()));
@@ -119,7 +123,7 @@ public class OrganizationGroupIsolationTest extends AbstractOrganizationTest {
 
         // Org B cannot access Org A's group
         try {
-            orgBResource.groups().group(groupAId).toRepresentation();
+            orgBResource.groups().group(groupAId).toRepresentation(false);
             fail("Org B should not be able to access Org A's groups");
         } catch (Exception e) {
             assertThat(e.getMessage(), containsString(Status.BAD_REQUEST.toString()));
@@ -233,7 +237,7 @@ public class OrganizationGroupIsolationTest extends AbstractOrganizationTest {
         getCleanup().addCleanup(() -> testRealm().groups().group(realmGroupId).remove());
 
         // Both should exist and be different groups
-        GroupRepresentation orgGroup = orgResource.groups().group(orgGroupId).toRepresentation();
+        GroupRepresentation orgGroup = orgResource.groups().group(orgGroupId).toRepresentation(false);
         assertThat(orgGroup.getName(), is(groupName));
 
         GroupRepresentation realmGroup = testRealm().groups().group(realmGroupId).toRepresentation();
@@ -268,10 +272,52 @@ public class OrganizationGroupIsolationTest extends AbstractOrganizationTest {
         getCleanup().addCleanup(() -> testRealm().groups().group(realmGroupId).remove());
 
         // Search org groups for "Engineering"
-        List<GroupRepresentation> results = orgResource.groups().getAll("Engineering", null, null, null);
+        List<GroupRepresentation> results = orgResource.groups().getAll("Engineering", null, null, null, null, true, false);
 
         // Should only find org group, not realm group
         assertThat(results, hasSize(1));
         assertThat(results.get(0).getName(), is("Engineering"));
+    }
+
+    @Test
+    public void testCannotUseOrgGroupInAuthorizationPolicy() {
+        // Organization groups cannot be used in authorization policies - only realm groups are allowed
+        OrganizationRepresentation orgRep = createOrganization();
+        OrganizationResource orgResource = testRealm().organizations().get(orgRep.getId());
+
+        // Create organization group
+        GroupRepresentation orgGroupRep = new GroupRepresentation();
+        orgGroupRep.setName("Engineering");
+        String orgGroupId;
+        try (Response response = orgResource.groups().addTopLevelGroup(orgGroupRep)) {
+            assertThat(response.getStatus(), is(Status.CREATED.getStatusCode()));
+            orgGroupId = ApiUtil.getCreatedId(response);
+        }
+
+        // Create a client with authorization services enabled
+        ClientRepresentation clientRep = new ClientRepresentation();
+        clientRep.setClientId("test-authz-client");
+        clientRep.setSecret("secret");
+        clientRep.setServiceAccountsEnabled(true);
+        clientRep.setAuthorizationServicesEnabled(true);
+        clientRep.setPublicClient(false);
+
+        String clientId;
+        try (Response response = testRealm().clients().create(clientRep)) {
+            clientId = ApiUtil.getCreatedId(response);
+        }
+        getCleanup().addCleanup(() -> testRealm().clients().get(clientId).remove());
+
+        ClientResource clientResource = testRealm().clients().get(clientId);
+
+        // Try to create a group policy using the organization group - should fail
+        GroupPolicyRepresentation policy = new GroupPolicyRepresentation();
+        policy.setName("org-group-policy");
+        policy.addGroup(orgGroupId);
+        policy.setLogic(Logic.POSITIVE);
+
+        try (Response response = clientResource.authorization().policies().group().create(policy)) {
+            assertThat(response.getStatus(), is(Status.BAD_REQUEST.getStatusCode()));
+        }
     }
 }

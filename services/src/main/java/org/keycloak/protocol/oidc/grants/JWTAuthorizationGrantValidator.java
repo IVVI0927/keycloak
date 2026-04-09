@@ -102,10 +102,12 @@ public class JWTAuthorizationGrantValidator extends AbstractBaseJWTValidator imp
         return scope;
     }
 
+    @Override
     public Set<String> getRestrictedScopes() {
         return restrictedScopes;
     }
 
+    @Override
     public void setRestrictedScopes(Set<String> restrictedScopes) {
         this.restrictedScopes = restrictedScopes;
     }

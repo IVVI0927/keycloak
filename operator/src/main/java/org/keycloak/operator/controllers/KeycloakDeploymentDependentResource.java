@@ -37,19 +37,19 @@ import org.keycloak.operator.Config;
 import org.keycloak.operator.Constants;
 import org.keycloak.operator.ContextUtils;
 import org.keycloak.operator.Utils;
-import org.keycloak.operator.crds.v2alpha1.CRDUtils;
-import org.keycloak.operator.crds.v2alpha1.deployment.Keycloak;
-import org.keycloak.operator.crds.v2alpha1.deployment.KeycloakSpec;
-import org.keycloak.operator.crds.v2alpha1.deployment.ValueOrSecret;
-import org.keycloak.operator.crds.v2alpha1.deployment.spec.CacheSpec;
-import org.keycloak.operator.crds.v2alpha1.deployment.spec.HttpManagementSpec;
-import org.keycloak.operator.crds.v2alpha1.deployment.spec.HttpSpec;
-import org.keycloak.operator.crds.v2alpha1.deployment.spec.ProbeSpec;
-import org.keycloak.operator.crds.v2alpha1.deployment.spec.SchedulingSpec;
-import org.keycloak.operator.crds.v2alpha1.deployment.spec.Truststore;
-import org.keycloak.operator.crds.v2alpha1.deployment.spec.TruststoreSource;
-import org.keycloak.operator.crds.v2alpha1.deployment.spec.UnsupportedSpec;
-import org.keycloak.operator.crds.v2alpha1.deployment.spec.UpdateSpec;
+import org.keycloak.operator.crds.v2beta1.CRDUtils;
+import org.keycloak.operator.crds.v2beta1.deployment.Keycloak;
+import org.keycloak.operator.crds.v2beta1.deployment.KeycloakSpec;
+import org.keycloak.operator.crds.v2beta1.deployment.ValueOrSecret;
+import org.keycloak.operator.crds.v2beta1.deployment.spec.CacheSpec;
+import org.keycloak.operator.crds.v2beta1.deployment.spec.HttpManagementSpec;
+import org.keycloak.operator.crds.v2beta1.deployment.spec.HttpSpec;
+import org.keycloak.operator.crds.v2beta1.deployment.spec.ProbeSpec;
+import org.keycloak.operator.crds.v2beta1.deployment.spec.SchedulingSpec;
+import org.keycloak.operator.crds.v2beta1.deployment.spec.Truststore;
+import org.keycloak.operator.crds.v2beta1.deployment.spec.TruststoreSource;
+import org.keycloak.operator.crds.v2beta1.deployment.spec.UnsupportedSpec;
+import org.keycloak.operator.crds.v2beta1.deployment.spec.UpdateSpec;
 import org.keycloak.operator.update.impl.RecreateOnImageChangeUpdateLogic;
 
 import io.fabric8.kubernetes.api.model.ConfigMap;
@@ -66,6 +66,7 @@ import io.fabric8.kubernetes.api.model.VolumeBuilder;
 import io.fabric8.kubernetes.api.model.VolumeMountBuilder;
 import io.fabric8.kubernetes.api.model.apps.StatefulSet;
 import io.fabric8.kubernetes.api.model.apps.StatefulSetBuilder;
+import io.fabric8.kubernetes.client.KubernetesClient;
 import io.javaoperatorsdk.operator.api.config.informer.Informer;
 import io.javaoperatorsdk.operator.api.reconciler.Context;
 import io.javaoperatorsdk.operator.api.reconciler.dependent.DependentResource;
@@ -76,9 +77,9 @@ import io.quarkus.logging.Log;
 
 import static org.keycloak.operator.Utils.addResources;
 import static org.keycloak.operator.controllers.KeycloakDistConfigurator.getKeycloakOptionEnvVarName;
-import static org.keycloak.operator.crds.v2alpha1.CRDUtils.LEGACY_MANAGEMENT_ENABLED;
-import static org.keycloak.operator.crds.v2alpha1.CRDUtils.isTlsConfigured;
-import static org.keycloak.operator.crds.v2alpha1.deployment.spec.TelemetrySpec.convertResourceAttributesToString;
+import static org.keycloak.operator.crds.v2beta1.CRDUtils.LEGACY_MANAGEMENT_ENABLED;
+import static org.keycloak.operator.crds.v2beta1.CRDUtils.isTlsConfigured;
+import static org.keycloak.operator.crds.v2beta1.deployment.spec.TelemetrySpec.convertResourceAttributesToString;
 
 @KubernetesDependent(
         informer = @Informer(labelSelector = Constants.DEFAULT_LABELS_AS_STRING)
@@ -98,6 +99,7 @@ public class KeycloakDeploymentDependentResource extends CRUDKubernetesDependent
     public static final String CACHE_CONFIG_FILE_MOUNT_NAME = "cache-config-file-configmap";
 
     public static final String KC_TRUSTSTORE_PATHS = "KC_TRUSTSTORE_PATHS";
+    public static final String KC_TRUSTSTORE_KUBERNETES_ENABLED = "KC_TRUSTSTORE_KUBERNETES_ENABLED";
 
     // Telemetry
     public static final String KC_TELEMETRY_SERVICE_NAME = "KC_TELEMETRY_SERVICE_NAME";
@@ -474,16 +476,9 @@ public class KeycloakDeploymentDependentResource extends CRUDKubernetesDependent
         LinkedHashMap<String, EnvVar> varMap = Stream.concat(Stream.concat(unsupportedEnv.stream(), firstClasssEnvVars.stream()), Stream.concat(additionalEnvVars.stream(), env))
                 .collect(Collectors.toMap(EnvVar::getName, Function.identity(), (e1, e2) -> e1, LinkedHashMap::new));
 
-
-        if (!Boolean.FALSE.equals(keycloakCR.getSpec().getAutomountServiceAccountToken())) {
-            String truststores = SERVICE_ACCOUNT_DIR + "ca.crt";
-
-            if (useServiceCaCrt) {
-                truststores += "," + SERVICE_CA_CRT;
-            }
-
-            // include the kube CA if the user is not controlling KC_TRUSTSTORE_PATHS via the unsupported or the additional
-            varMap.putIfAbsent(KC_TRUSTSTORE_PATHS, new EnvVarBuilder().withName(KC_TRUSTSTORE_PATHS).withValue(truststores).build());
+        // Turn Kubernetes CA autodiscovery off
+        if (Boolean.FALSE.equals(keycloakCR.getSpec().getAutomountServiceAccountToken())) {
+            varMap.putIfAbsent(KC_TRUSTSTORE_KUBERNETES_ENABLED, new EnvVarBuilder().withName(KC_TRUSTSTORE_KUBERNETES_ENABLED).withValue("false").build());
         }
 
         setTelemetryEnvVars(keycloakCR, varMap);
@@ -606,7 +601,7 @@ public class KeycloakDeploymentDependentResource extends CRUDKubernetesDependent
         return keycloak.getMetadata().getName();
     }
 
-    static Optional<String> readConfigurationValue(String key, Keycloak keycloakCR, Context<Keycloak> context) {
+    static Optional<String> readConfigurationValue(String key, Keycloak keycloakCR, KubernetesClient client) {
         return Optional.ofNullable(keycloakCR.getSpec()).map(KeycloakSpec::getAdditionalOptions)
                 .flatMap(l -> l.stream().filter(sc -> sc.getName().equals(key)).findFirst().map(serverConfigValue -> {
             if (serverConfigValue.getValue() != null) {
@@ -616,7 +611,7 @@ public class KeycloakDeploymentDependentResource extends CRUDKubernetesDependent
             if (secretSelector == null) {
                 throw new IllegalStateException("Secret " + serverConfigValue.getName() + " not defined");
             }
-            var secret = context.getClient().secrets().inNamespace(keycloakCR.getMetadata().getNamespace()).withName(secretSelector.getName()).get();
+            var secret = client.secrets().inNamespace(keycloakCR.getMetadata().getNamespace()).withName(secretSelector.getName()).get();
             if (secret == null) {
                 throw new IllegalStateException("Secret " + secretSelector.getName() + " not found in cluster");
             }
@@ -675,14 +670,14 @@ public class KeycloakDeploymentDependentResource extends CRUDKubernetesDependent
         int port;
         String portName;
 
-        var legacy = readConfigurationValue(LEGACY_MANAGEMENT_ENABLED, keycloakCR, context).map(Boolean::valueOf).orElse(false);
+        var legacy = readConfigurationValue(LEGACY_MANAGEMENT_ENABLED, keycloakCR, context.getClient()).map(Boolean::valueOf).orElse(false);
 
-        var healthManagementEnabled = readConfigurationValue(CRDUtils.HTTP_MANAGEMENT_HEALTH_ENABLED, keycloakCR, context).map(Boolean::valueOf).orElse(true);
+        var healthManagementEnabled = readConfigurationValue(CRDUtils.HTTP_MANAGEMENT_HEALTH_ENABLED, keycloakCR, context.getClient()).map(Boolean::valueOf).orElse(true);
 
         if (!legacy && (!health || healthManagementEnabled)) {
             port = HttpManagementSpec.managementPort(keycloakCR);
             portName = Constants.KEYCLOAK_MANAGEMENT_PORT_NAME;
-            if (readConfigurationValue(HTTP_MANAGEMENT_SCHEME, keycloakCR, context).filter("http"::equals).isPresent()) {
+            if (readConfigurationValue(HTTP_MANAGEMENT_SCHEME, keycloakCR, context.getClient()).filter("http"::equals).isPresent()) {
                 protocol = "HTTP";
             }
         } else {
@@ -690,8 +685,8 @@ public class KeycloakDeploymentDependentResource extends CRUDKubernetesDependent
             portName = tls ? Constants.KEYCLOAK_HTTPS_PORT_NAME : Constants.KEYCLOAK_HTTP_PORT_NAME;
         }
 
-        var relativePath = readConfigurationValue(Constants.KEYCLOAK_HTTP_MANAGEMENT_RELATIVE_PATH_KEY, keycloakCR, context)
-              .or(() -> readConfigurationValue(Constants.KEYCLOAK_HTTP_RELATIVE_PATH_KEY, keycloakCR, context))
+        var relativePath = readConfigurationValue(Constants.KEYCLOAK_HTTP_MANAGEMENT_RELATIVE_PATH_KEY, keycloakCR, context.getClient())
+              .or(() -> readConfigurationValue(Constants.KEYCLOAK_HTTP_RELATIVE_PATH_KEY, keycloakCR, context.getClient()))
               .map(path -> !path.endsWith("/") ? path + "/" : path)
               .orElse("/");
 

@@ -20,7 +20,9 @@ package org.keycloak.protocol.oidc.utils;
 import java.net.URI;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.regex.Pattern;
@@ -149,7 +151,7 @@ public class RedirectUtils {
 
     // any access to parent folder /../ is unsafe with or without encoding
     private final static Pattern UNSAFE_PATH_PATTERN = Pattern.compile(
-            "(/|%2[fF]|%5[cC]|\\\\)(%2[eE]|\\.){2}(/|%2[fF]|%5[cC]|\\\\)|(/|%2[fF]|%5[cC]|\\\\)(%2[eE]|\\.){2}$");
+            "(/|%2[fF]|%5[cC]|\\\\)(%2[eE]|\\.){2}(/|%2[fF]|%5[cC]|\\\\|;)|(/|%2[fF]|%5[cC]|\\\\)(%2[eE]|\\.){2}$");
 
     private static boolean areWildcardsAllowed(URI redirectUri) {
         // wildcars are only allowed if no user-info and no unsafe pattern in path
@@ -213,5 +215,30 @@ public class RedirectUtils {
             redirectUri = redirectUri.substring(0, idx);
         }
         return redirectUri;
+    }
+
+    public static Set<String> resolveUrlsWithRedirects(KeycloakSession session, List<String> origUrls,
+                                                       String rootUrl, List<String> redirectUris, boolean returnAsOrigins) {
+
+        Set<String> refactoredUrls = (origUrls != null) ? new HashSet<>(origUrls) : new HashSet<>();
+        if (refactoredUrls.contains(Constants.INCLUDE_REDIRECTS)) {
+            refactoredUrls.remove(Constants.INCLUDE_REDIRECTS);
+
+            Set<String> redirectsToProcess = (redirectUris != null) ? new HashSet<>(redirectUris) : Collections.emptySet();
+            for (String redirectUri : resolveValidRedirects(session, rootUrl, redirectsToProcess)) {
+                if (isValidScheme(redirectUri)) {
+                    if (returnAsOrigins) {
+                        refactoredUrls.add(UriUtils.getOrigin(redirectUri));
+                    } else {
+                        refactoredUrls.add(redirectUri);
+                    }
+                }
+            }
+        }
+        return refactoredUrls;
+    }
+
+    private static boolean isValidScheme(String url) {
+        return url != null && (url.startsWith("http://") || url.startsWith("https://"));
     }
 }

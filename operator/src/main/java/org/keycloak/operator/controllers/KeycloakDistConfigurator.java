@@ -36,19 +36,19 @@ import jakarta.enterprise.context.ApplicationScoped;
 
 import org.keycloak.common.util.CollectionUtil;
 import org.keycloak.operator.Constants;
-import org.keycloak.operator.crds.v2alpha1.deployment.Keycloak;
-import org.keycloak.operator.crds.v2alpha1.deployment.KeycloakStatusAggregator;
-import org.keycloak.operator.crds.v2alpha1.deployment.ValueOrSecret;
-import org.keycloak.operator.crds.v2alpha1.deployment.spec.BootstrapAdminSpec;
-import org.keycloak.operator.crds.v2alpha1.deployment.spec.DatabaseSpec;
-import org.keycloak.operator.crds.v2alpha1.deployment.spec.FeatureSpec;
-import org.keycloak.operator.crds.v2alpha1.deployment.spec.HostnameSpec;
-import org.keycloak.operator.crds.v2alpha1.deployment.spec.HttpManagementSpec;
-import org.keycloak.operator.crds.v2alpha1.deployment.spec.HttpSpec;
-import org.keycloak.operator.crds.v2alpha1.deployment.spec.ProxySpec;
-import org.keycloak.operator.crds.v2alpha1.deployment.spec.TelemetrySpec;
-import org.keycloak.operator.crds.v2alpha1.deployment.spec.TracingSpec;
-import org.keycloak.operator.crds.v2alpha1.deployment.spec.TransactionsSpec;
+import org.keycloak.operator.crds.v2beta1.deployment.Keycloak;
+import org.keycloak.operator.crds.v2beta1.deployment.KeycloakStatusAggregator;
+import org.keycloak.operator.crds.v2beta1.deployment.ValueOrSecret;
+import org.keycloak.operator.crds.v2beta1.deployment.spec.BootstrapAdminSpec;
+import org.keycloak.operator.crds.v2beta1.deployment.spec.DatabaseSpec;
+import org.keycloak.operator.crds.v2beta1.deployment.spec.FeatureSpec;
+import org.keycloak.operator.crds.v2beta1.deployment.spec.HostnameSpec;
+import org.keycloak.operator.crds.v2beta1.deployment.spec.HttpManagementSpec;
+import org.keycloak.operator.crds.v2beta1.deployment.spec.HttpSpec;
+import org.keycloak.operator.crds.v2beta1.deployment.spec.ProxySpec;
+import org.keycloak.operator.crds.v2beta1.deployment.spec.TelemetrySpec;
+import org.keycloak.operator.crds.v2beta1.deployment.spec.TracingSpec;
+import org.keycloak.operator.crds.v2beta1.deployment.spec.TransactionsSpec;
 
 import io.fabric8.kubernetes.api.model.EnvVar;
 import io.fabric8.kubernetes.api.model.EnvVarBuilder;
@@ -114,9 +114,9 @@ public class KeycloakDistConfigurator {
 
         optionMapper(keycloakCR -> keycloakCR.getSpec().getBootstrapAdminSpec())
                 .mapOption("bootstrap-admin-client-id",
-                        spec -> Optional.ofNullable(spec.getService()).map(BootstrapAdminSpec.Service::getSecret).map(s -> new SecretKeySelector("client-id", s, null)).orElse(null))
+                        spec -> Optional.ofNullable(spec.getService()).map(BootstrapAdminSpec.Service::getSecret).map(s -> new SecretKeySelector(Constants.CLIENT_ID_KEY, s, null)).orElse(null))
                 .mapOption("bootstrap-admin-client-secret",
-                        spec -> Optional.ofNullable(spec.getService()).map(BootstrapAdminSpec.Service::getSecret).map(s -> new SecretKeySelector("client-secret", s, null)).orElse(null));
+                        spec -> Optional.ofNullable(spec.getService()).map(BootstrapAdminSpec.Service::getSecret).map(s -> new SecretKeySelector(Constants.CLIENT_SECRET_KEY, s, null)).orElse(null));
     }
 
     void configureHostname() {

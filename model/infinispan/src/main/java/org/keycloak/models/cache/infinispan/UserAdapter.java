@@ -163,6 +163,21 @@ public class UserAdapter implements CachedUserModel {
     }
 
     @Override
+    public Long getLastModifiedTimestamp() {
+        if (updated != null) return updated.getLastModifiedTimestamp();
+        return cached.getLastModifiedTimestamp();
+    }
+
+    @Override
+    public void setLastModifiedTimestamp(Long timestamp) {
+        if (updated == null && Objects.equals(cached.getLastModifiedTimestamp(), timestamp)) {
+            return;
+        }
+        getDelegateForUpdate();
+        updated.setLastModifiedTimestamp(timestamp);
+    }
+
+    @Override
     public boolean isEnabled() {
         if (updated != null) return updated.isEnabled();
         return cached.isEnabled();
@@ -485,6 +500,7 @@ public class UserAdapter implements CachedUserModel {
 
     @Override
     public void joinGroup(GroupModel group) {
+        // Only REALM groups are cached; organization groups always delegate to persistence
         if (group.getType() == Type.REALM && updated == null && cached.getGroups(keycloakSession, modelSupplier).contains(group.getId())) {
             return;
         }
@@ -495,7 +511,7 @@ public class UserAdapter implements CachedUserModel {
 
     @Override
     public void leaveGroup(GroupModel group) {
-        // todo cashing
+        // Only REALM groups are cached; organization groups always delegate to persistence
         if (group.getType() == Type.REALM && updated == null && !cached.getGroups(keycloakSession, modelSupplier).contains(group.getId())) {
             return;
         }

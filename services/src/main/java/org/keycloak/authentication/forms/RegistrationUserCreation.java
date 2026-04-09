@@ -300,7 +300,7 @@ public class RegistrationUserCreation implements FormAction, FormActionFactory {
             InviteOrgActionToken token;
 
             try {
-                token = Organizations.parseInvitationToken(context.getHttpRequest());
+                token = Organizations.parseInvitationToken(context.getSession(), context.getHttpRequest());
             } catch (VerificationException e) {
                 error.accept(List.of(new FormMessage("Unexpected error parsing the invitation token")));
                 return false;
@@ -316,6 +316,11 @@ public class RegistrationUserCreation implements FormAction, FormActionFactory {
 
             if (organization == null) {
                 error.accept(List.of(new FormMessage("The provided token contains an invalid organization id")));
+                return false;
+            }
+
+            if (!organization.isEnabled()) {
+                error.accept(List.of(new FormMessage("The organization is not available at this time.")));
                 return false;
             }
 

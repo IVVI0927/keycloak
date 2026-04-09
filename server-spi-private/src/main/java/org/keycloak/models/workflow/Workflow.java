@@ -39,7 +39,6 @@ import static java.util.Optional.ofNullable;
 
 import static org.keycloak.representations.workflows.WorkflowConstants.CONFIG_CONDITIONS;
 import static org.keycloak.representations.workflows.WorkflowConstants.CONFIG_ENABLED;
-import static org.keycloak.representations.workflows.WorkflowConstants.CONFIG_ERROR;
 import static org.keycloak.representations.workflows.WorkflowConstants.CONFIG_NAME;
 import static org.keycloak.representations.workflows.WorkflowConstants.CONFIG_SUPPORTS;
 
@@ -66,6 +65,17 @@ public class Workflow {
         config.forEach(c::addAll);
         this.config = c;
     }
+
+    /**
+     * Create a new workflow instance based on the provided workflow but bound to a new session.
+     *
+     * @param workflow the workflow to copy
+     */
+    public Workflow(KeycloakSession session, Workflow workflow) {
+        this(session, workflow.getId(), workflow.getConfig());
+        this.notBefore = workflow.getNotBefore();
+    }
+
 
     public String getId() {
         return id;
@@ -106,13 +116,6 @@ public class Workflow {
             config = new MultivaluedHashMap<>();
         }
         config.putSingle(CONFIG_ENABLED, String.valueOf(enabled));
-    }
-
-    public void setError(String message) {
-        if (config == null) {
-            config = new MultivaluedHashMap<>();
-        }
-        config.putSingle(CONFIG_ERROR, message);
     }
 
     public void setSupportedType(ResourceType resourceType) {
@@ -180,8 +183,8 @@ public class Workflow {
             addStep(step);
 
             // update allowed types
-            WorkflowStepProviderFactory<WorkflowStepProvider> stepProvider = getStepProviderFactory(step);
-            allowedTypes.retainAll(stepProvider.getTypes());
+            WorkflowStepProviderFactory<WorkflowStepProvider> stepProvider = Workflows.getStepProviderFactory(session, step);
+            allowedTypes.retainAll(stepProvider.getSupportedResourceTypes());
         }
 
         if (allowedTypes.isEmpty()) {
@@ -221,13 +224,8 @@ public class Workflow {
         ComponentModel component = realm.getComponent(id);
 
         if (component == null || !Objects.equals(providerType, component.getProviderType())) {
-            throw new BadRequestException("Not a valid resource workflow: " + id);
+            throw new BadRequestException("Not a valid workflow resource: " + id);
         }
         return component;
-    }
-
-    private WorkflowStepProviderFactory<WorkflowStepProvider> getStepProviderFactory(WorkflowStep step) {
-        return (WorkflowStepProviderFactory<WorkflowStepProvider>) session
-            .getKeycloakSessionFactory().getProviderFactory(WorkflowStepProvider.class, step.getProviderId());
     }
 }

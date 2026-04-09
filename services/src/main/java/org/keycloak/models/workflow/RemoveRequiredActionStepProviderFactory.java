@@ -7,7 +7,7 @@ import org.keycloak.models.KeycloakSession;
 
 public class RemoveRequiredActionStepProviderFactory implements WorkflowStepProviderFactory<RemoveRequiredActionStepProvider> {
 
-    public static final String ID = "remove-user-required-action";
+    public static final String ID = "remove-required-action";
 
     @Override
     public RemoveRequiredActionStepProvider create(KeycloakSession session, ComponentModel model) {
@@ -20,7 +20,7 @@ public class RemoveRequiredActionStepProviderFactory implements WorkflowStepProv
     }
 
     @Override
-    public Set<ResourceType> getTypes() {
+    public Set<ResourceType> getSupportedResourceTypes() {
         return Set.of(ResourceType.USERS);
     }
 

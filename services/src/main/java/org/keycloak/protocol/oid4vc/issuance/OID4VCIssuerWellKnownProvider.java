@@ -47,6 +47,7 @@ import org.keycloak.models.RealmModel;
 import org.keycloak.models.oid4vci.CredentialScopeModel;
 import org.keycloak.protocol.oid4vc.OID4VCLoginProtocolFactory;
 import org.keycloak.protocol.oid4vc.issuance.credentialbuilder.CredentialBuilder;
+import org.keycloak.protocol.oid4vc.issuance.credentialbuilder.CredentialBuilderFactory;
 import org.keycloak.protocol.oid4vc.model.CredentialIssuer;
 import org.keycloak.protocol.oid4vc.model.CredentialRequestEncryptionMetadata;
 import org.keycloak.protocol.oid4vc.model.CredentialResponseEncryptionMetadata;
@@ -80,8 +81,9 @@ public class OID4VCIssuerWellKnownProvider implements WellKnownProvider {
 
     private static final Logger LOGGER = Logger.getLogger(OID4VCIssuerWellKnownProvider.class);
 
+    public static final String PROVIDER_ID = "openid-credential-issuer";
+
     // Realm attributes for signed metadata configuration
-    public static final String SIGNED_METADATA_ENABLED_ATTR = "oid4vci.signed_metadata.enabled";
     public static final String SIGNED_METADATA_LIFESPAN_ATTR = "oid4vci.signed_metadata.lifespan";
     public static final String SIGNED_METADATA_ALG_ATTR = "oid4vci.signed_metadata.alg";
 
@@ -160,9 +162,8 @@ public class OID4VCIssuerWellKnownProvider implements WellKnownProvider {
         RealmModel realm = session.getContext().getRealm();
         String acceptHeader = session.getContext().getRequestHeaders().getHeaderString(HttpHeaders.ACCEPT);
         boolean preferJwt = acceptHeader != null && acceptHeader.contains(MediaType.APPLICATION_JWT);
-        boolean signedMetadataEnabled = Boolean.parseBoolean(realm.getAttribute(SIGNED_METADATA_ENABLED_ATTR));
 
-        if (preferJwt && signedMetadataEnabled) {
+        if (preferJwt) {
             Optional<String> signedJwt = generateSignedMetadata(issuer, session);
             if (signedJwt.isPresent()) {
                 return signedJwt.get();
@@ -234,15 +235,17 @@ public class OID4VCIssuerWellKnownProvider implements WellKnownProvider {
         JsonWebToken jwt = createMetadataJwt(metadata, realm);
 
         // Validate lifespan configuration
-        String lifespanStr = realm.getAttribute(SIGNED_METADATA_LIFESPAN_ATTR);
-        if (lifespanStr != null) {
+        Optional<String> maybeLifespan = Optional.ofNullable(realm.getAttribute(SIGNED_METADATA_LIFESPAN_ATTR));
+        if (maybeLifespan.isPresent()) {
+            String lifespanVal = maybeLifespan.get();
             try {
-                long lifespan = Long.parseLong(lifespanStr);
-                jwt.exp(Time.currentTime() + lifespan);
+                jwt.exp(Time.currentTime() + Long.parseLong(lifespanVal));
             } catch (NumberFormatException e) {
-                LOGGER.warnf("Invalid lifespan duration for signed metadata: %s. Falling back to unsigned metadata.", lifespanStr);
+                LOGGER.warnf("Invalid lifespan duration for signed metadata: %s. Falling back to unsigned metadata.", lifespanVal);
                 return Optional.empty(); // Return empty to indicate fallback to JSON
             }
+        } else {
+            jwt.exp(Time.currentTime() + 3600L);
         }
 
         // Build JWS with proper headers
@@ -459,24 +462,54 @@ public class OID4VCIssuerWellKnownProvider implements WellKnownProvider {
                 keycloakSession.clientScopes()
                         .getClientScopesByProtocol(realm, OID4VCIConstants.OID4VC_PROTOCOL)
                         .map(CredentialScopeModel::new)
-                        .map(clientScope -> {
-                            return SupportedCredentialConfiguration.parse(keycloakSession,
-                                    clientScope,
+                        .map(credentialScope -> {
+                            SupportedCredentialConfiguration config = SupportedCredentialConfiguration.parse(keycloakSession,
+                                    credentialScope,
                                     globalSupportedSigningAlgorithms
                             );
+                            applyFormatSpecificMetadata(keycloakSession, config, credentialScope);
+                            return config;
                         })
                         .collect(Collectors.toMap(SupportedCredentialConfiguration::getId, sc -> sc, (sc1, sc2) -> sc1));
 
         return supportedCredentialConfigurations;
     }
 
+
+    private static void applyFormatSpecificMetadata(KeycloakSession keycloakSession,
+                                                     SupportedCredentialConfiguration config,
+                                                     CredentialScopeModel credentialScope) {
+        String format = config.getFormat();
+        if (format == null) {
+            return;
+        }
+
+        // Find the CredentialBuilder for this format using the factory pattern
+        CredentialBuilder credentialBuilder = keycloakSession.getKeycloakSessionFactory()
+                .getProviderFactoriesStream(CredentialBuilder.class)
+                .map(factory -> (CredentialBuilderFactory) factory)
+                .filter(factory -> format.equals(factory.getSupportedFormat()))
+                .findFirst()
+                .map(factory -> factory.create(keycloakSession, null))
+                .orElse(null);
+
+        if (credentialBuilder == null) {
+            LOGGER.debugf("No CredentialBuilder found for format: %s", format);
+            return;
+        }
+
+        credentialBuilder.contributeToMetadata(config, credentialScope);
+    }
+
     public static SupportedCredentialConfiguration toSupportedCredentialConfiguration(KeycloakSession keycloakSession,
                                                                                       CredentialScopeModel credentialModel) {
         List<String> globalSupportedSigningAlgorithms = getSupportedAsymmetricSignatureAlgorithms(keycloakSession);
 
-        return SupportedCredentialConfiguration.parse(keycloakSession,
+        SupportedCredentialConfiguration config = SupportedCredentialConfiguration.parse(keycloakSession,
                 credentialModel,
                 globalSupportedSigningAlgorithms);
+        applyFormatSpecificMetadata(keycloakSession, config, credentialModel);
+        return config;
     }
 
     /**
@@ -540,7 +573,7 @@ public class OID4VCIssuerWellKnownProvider implements WellKnownProvider {
 
         UriBuilder base = session.getContext().getUri().getBaseUriBuilder();
         String logKey = session.getContext().getRealm().getName();
-        URI successor = ServerMetadataResource.wellKnownOAuthProviderUrl(base)
+        URI successor = ServerMetadataResource.wellKnownProviderUrl(base)
                 .build(WELL_KNOWN_OPENID_CREDENTIAL_ISSUER, logKey);
 
         HttpResponse httpResponse = session.getContext().getHttpResponse();

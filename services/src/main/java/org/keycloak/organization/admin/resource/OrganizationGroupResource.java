@@ -17,6 +17,7 @@
 
 package org.keycloak.organization.admin.resource;
 
+import java.net.URI;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -48,8 +49,10 @@ import org.keycloak.models.ModelException;
 import org.keycloak.models.OrganizationModel;
 import org.keycloak.models.RealmModel;
 import org.keycloak.models.UserModel;
+import org.keycloak.models.utils.KeycloakModelUtils;
 import org.keycloak.models.utils.ModelToRepresentation;
 import org.keycloak.organization.OrganizationProvider;
+import org.keycloak.organization.utils.Organizations;
 import org.keycloak.representations.idm.GroupRepresentation;
 import org.keycloak.representations.idm.MemberRepresentation;
 import org.keycloak.representations.idm.MembershipType;
@@ -92,10 +95,9 @@ public class OrganizationGroupResource {
     @APIResponses(value = {
         @APIResponse(responseCode = "200", description = "OK")
     })
-    public GroupRepresentation getGroup() {
-        GroupRepresentation rep = ModelToRepresentation.groupToBriefRepresentation(group);
-        // todo path
-        rep.setPath("");
+    public GroupRepresentation getGroup(@Parameter(description = "Whether to return the count of subgroups (default: false)") @QueryParam("subGroupsCount") @DefaultValue("false") boolean subGroupsCount) {
+        GroupRepresentation rep = ModelToRepresentation.toRepresentation(group, true);
+        if (subGroupsCount) rep.setSubGroupCount(group.getSubGroupsCount());
         return rep;
     }
 
@@ -108,7 +110,6 @@ public class OrganizationGroupResource {
         @APIResponse(responseCode = "404", description = "Not Found")
     })
     public void deleteGroup() {
-        // todo org cache - listen to removal event and invalidate corresponding org in the cache?
         session.groups().removeGroup(session.getContext().getRealm(), group);
         adminEvent.operation(OperationType.DELETE).resourcePath(session.getContext().getUri()).success();
     }
@@ -135,9 +136,12 @@ public class OrganizationGroupResource {
                 throw ErrorResponse.error("Invalid group id", Response.Status.BAD_REQUEST);
             }
 
-            // name, todo path
+            // name changed: fire path change event
             if (!Objects.equals(groupName, group.getName())) {
+                String previousPath = KeycloakModelUtils.buildGroupPath(group);
                 group.setName(groupName);
+                String newPath = KeycloakModelUtils.buildGroupPath(group);
+                GroupModel.GroupPathChangeEvent.fire(group, newPath, previousPath, session);
             }
 
             // description
@@ -179,14 +183,17 @@ public class OrganizationGroupResource {
             @Parameter(description = "A String representing either an exact group name or a partial name") @QueryParam("search") String search,
             @Parameter(description = "Boolean which defines whether the params \"search\" must match exactly or not") @QueryParam("exact") Boolean exact,
             @Parameter(description = "The position of the first result to be returned (pagination offset).") @QueryParam("first") @DefaultValue("0") Integer first,
-            @Parameter(description = "The maximum number of results that are to be returned. Defaults to 10") @QueryParam("max") @DefaultValue("10") Integer max) {
+            @Parameter(description = "The maximum number of results that are to be returned. Defaults to 10") @QueryParam("max") @DefaultValue("10") Integer max,
+            @Parameter(description = "Whether to return the count of subgroups (default: false)") @QueryParam("subGroupsCount") boolean subGroupsCount) {
 
-        return group.getSubGroupsStream(search, exact, first, max).map(groupModel -> {
-            GroupRepresentation rep = ModelToRepresentation.groupToBriefRepresentation(groupModel);
-            // todo path
-            rep.setPath("");
-            return rep;
-        });
+        return group.getSubGroupsStream(search, exact, first, max)
+                .map(group -> {
+                    GroupRepresentation rep = ModelToRepresentation.groupToBriefRepresentation(group);
+                    if (subGroupsCount) {
+                        rep.setSubGroupCount(group.getSubGroupsCount());
+                    }
+                    return rep;
+                });
     }
 
     @POST
@@ -231,8 +238,8 @@ public class OrganizationGroupResource {
                 }
 
                 // Validate it belongs to the same organization
-                OrganizationModel childOrg = child.getOrganization();
-                if (childOrg == null || !childOrg.getId().equals(organization.getId())) {
+                if (!Organizations.isOrganizationGroup(child) ||
+                        !child.getOrganization().getId().equals(organization.getId())) {
                     throw ErrorResponse.error("Group does not belong to this organization", Response.Status.BAD_REQUEST);
                 }
 
@@ -245,7 +252,9 @@ public class OrganizationGroupResource {
             } else {
                 // CREATE new subgroup
                 child = organizationProvider.createGroup(organization, groupName, group);
-                builder.status(201);
+                URI uri = session.getContext().getUri().getAbsolutePathBuilder()
+                        .path(child.getId()).build();
+                builder.status(201).location(uri);
                 rep.setId(child.getId());
                 adminEvent.operation(OperationType.CREATE);
             }

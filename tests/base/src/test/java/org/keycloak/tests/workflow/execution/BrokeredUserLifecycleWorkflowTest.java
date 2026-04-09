@@ -13,14 +13,16 @@ import org.keycloak.models.UserModel;
 import org.keycloak.models.workflow.DeleteUserStepProviderFactory;
 import org.keycloak.models.workflow.DisableUserStepProviderFactory;
 import org.keycloak.models.workflow.NotifyUserStepProviderFactory;
-import org.keycloak.models.workflow.ResourceOperationType;
 import org.keycloak.models.workflow.conditions.IdentityProviderWorkflowConditionFactory;
+import org.keycloak.models.workflow.events.UserAuthenticatedWorkflowEventFactory;
+import org.keycloak.models.workflow.events.UserCreatedWorkflowEventFactory;
+import org.keycloak.models.workflow.events.UserFedIdentityAddedWorkflowEventFactory;
+import org.keycloak.models.workflow.events.UserFedIdentityRemovedWorkflowEventFactory;
 import org.keycloak.representations.idm.FederatedIdentityRepresentation;
 import org.keycloak.representations.idm.IdentityProviderRepresentation;
 import org.keycloak.representations.idm.UserRepresentation;
 import org.keycloak.representations.workflows.StepExecutionStatus;
 import org.keycloak.representations.workflows.WorkflowRepresentation;
-import org.keycloak.representations.workflows.WorkflowStateRepresentation;
 import org.keycloak.representations.workflows.WorkflowStepRepresentation;
 import org.keycloak.testframework.annotations.InjectClient;
 import org.keycloak.testframework.annotations.InjectRealm;
@@ -51,22 +53,16 @@ import org.keycloak.testframework.util.ApiUtil;
 import org.keycloak.tests.workflow.AbstractWorkflowTest;
 import org.keycloak.tests.workflow.config.WorkflowsBlockingServerConfig;
 
-import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import static org.keycloak.models.workflow.ResourceOperationType.USER_AUTHENTICATED;
-import static org.keycloak.models.workflow.ResourceOperationType.USER_CREATED;
 import static org.keycloak.tests.workflow.util.EmailTestUtils.findEmailByRecipient;
 import static org.keycloak.tests.workflow.util.EmailTestUtils.verifyEmailContent;
 
 import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.Matchers.allOf;
-import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.empty;
 import static org.hamcrest.Matchers.hasSize;
 import static org.hamcrest.Matchers.is;
-import static org.hamcrest.Matchers.notNullValue;
 import static org.hamcrest.Matchers.nullValue;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -129,7 +125,7 @@ public class BrokeredUserLifecycleWorkflowTest extends AbstractWorkflowTest {
         // create a workflow that notifies inactive users after 7 days, disables them 30 days after that if the user doesn't
         // log back in, and finally deletes them also 30 days after being disabled.
         consumerRealm.admin().workflows().create(WorkflowRepresentation.withName("myworkflow")
-                .onEvent(USER_AUTHENTICATED.toString())
+                .onEvent(UserAuthenticatedWorkflowEventFactory.ID)
                 .onCondition(IDP_CONDITION)
                 .concurrency().restartInProgress("true")
                 .withSteps(
@@ -198,7 +194,7 @@ public class BrokeredUserLifecycleWorkflowTest extends AbstractWorkflowTest {
     public void testNonBrokeredUserNotAffectedByWorkflow() {
         // create a workflow that deletes inactive users after 10 days.
         consumerRealm.admin().workflows().create(WorkflowRepresentation.withName("myworkflow")
-                .onEvent(USER_AUTHENTICATED.toString())
+                .onEvent(UserAuthenticatedWorkflowEventFactory.ID)
                 .onCondition(IDP_CONDITION)
                 .withSteps(
                         WorkflowStepRepresentation.create().of(DeleteUserStepProviderFactory.ID)
@@ -218,10 +214,10 @@ public class BrokeredUserLifecycleWorkflowTest extends AbstractWorkflowTest {
     }
 
     @Test
-    public void testInvalidateWorkflowOnIdentityProviderRemoval() {
+    public void testWorkflowFailsToActivateOnIdentityProviderRemoval() {
         String workflowId;
         try (Response response = consumerRealm.admin().workflows().create(WorkflowRepresentation.withName("myworkflow")
-                .onEvent(USER_CREATED.toString(), USER_AUTHENTICATED.toString())
+                .onEvent(UserCreatedWorkflowEventFactory.ID, UserAuthenticatedWorkflowEventFactory.ID)
                 .onCondition(IDP_CONDITION)
                 .withSteps(
                         WorkflowStepRepresentation.create().of(DeleteUserStepProviderFactory.ID)
@@ -240,20 +236,15 @@ public class BrokeredUserLifecycleWorkflowTest extends AbstractWorkflowTest {
         // remove IDP
         consumerRealm.admin().identityProviders().get(IDP_OIDC_ALIAS).remove();
 
-        // create new user - it will trigger an activation event and therefore should disable the workflow
-        consumerRealm.admin().users().create(UserConfigBuilder.create().username("test").build()).close();
+        // create new user - it will trigger an activation event but the condition is referencing the removed IDP
+        String userId = null;
+        try(Response response = consumerRealm.admin().users().create(UserConfigBuilder.create().username("test").build())) {
+            userId = ApiUtil.getCreatedId(response);
+        }
 
-        Awaitility.await()
-                .timeout(Duration.ofSeconds(30))
-                .pollInterval(Duration.ofSeconds(1))
-                .untilAsserted(() -> {
-                    var rep = consumerRealm.admin().workflows().workflow(workflowId).toRepresentation();
-                    assertThat(rep.getEnabled(), allOf(notNullValue(), is(false)));
-                    WorkflowStateRepresentation status = rep.getState();
-                    assertThat(status, notNullValue());
-                    assertThat(status.getErrors(), hasSize(1));
-                    assertThat(status.getErrors().get(0), containsString("Identity provider %s does not exist.".formatted(IDP_OIDC_ALIAS)));
-                });
+        // check that there are no scheduled workflows for the user even though the right event was processed
+        List<WorkflowRepresentation> scheduledWorkflows = consumerRealm.admin().workflows().getScheduledWorkflows(userId);
+        assertThat(scheduledWorkflows, hasSize(0));
     }
 
     /**
@@ -266,8 +257,8 @@ public class BrokeredUserLifecycleWorkflowTest extends AbstractWorkflowTest {
 
         // create a workflow that deletes users 1 day after a federated identity is added, and that is cancelled if the identity is removed
         consumerRealm.admin().workflows().create(WorkflowRepresentation.withName("myworkflow")
-                .onEvent(ResourceOperationType.USER_FEDERATED_IDENTITY_ADDED.name() + "(" + IDP_OIDC_ALIAS + ")")
-                .concurrency().cancelInProgress(ResourceOperationType.USER_FEDERATED_IDENTITY_REMOVED.name() + "(" + IDP_OIDC_ALIAS + ")")
+                .onEvent(UserFedIdentityAddedWorkflowEventFactory.ID + "(" + IDP_OIDC_ALIAS + ")")
+                .concurrency().cancelInProgress(UserFedIdentityRemovedWorkflowEventFactory.ID + "(" + IDP_OIDC_ALIAS + ")")
                 .withSteps(
                         WorkflowStepRepresentation.create().of(DeleteUserStepProviderFactory.ID)
                                 .after(Duration.ofDays(1))

@@ -17,27 +17,45 @@
 package org.keycloak.protocol.oid4vc.model;
 
 import java.util.List;
+import java.util.Objects;
 
 import org.keycloak.representations.AuthorizationDetailsJSONRepresentation;
+import org.keycloak.util.JsonSerialization;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 
+import static org.keycloak.OID4VCConstants.CREDENTIAL_CONFIGURATION_ID;
+import static org.keycloak.OID4VCConstants.CREDENTIAL_IDENTIFIERS;
+
 /**
  * Represents an authorization_details object in the Token Request as per OID4VCI.
- * 
+ *
  * @author <a href="mailto:Forkim.Akwichek@adorsys.com">Forkim Akwichek</a>
  */
-public class OID4VCAuthorizationDetail extends AuthorizationDetailsJSONRepresentation {
+public class OID4VCAuthorizationDetail extends AuthorizationDetailsJSONRepresentation implements Cloneable {
 
-    public static final String CREDENTIAL_CONFIGURATION_ID = "credential_configuration_id";
-    public static final String CREDENTIAL_IDENTIFIERS = "credential_identifiers";
     public static final String CLAIMS = "claims";
+    public static final String CREDENTIALS_OFFER_ID = "credentials_offer_id";
 
     @JsonProperty(CREDENTIAL_CONFIGURATION_ID)
     private String credentialConfigurationId;
 
+    /**
+     * The 'credential_identifiers' property is populated by the Issuer in the AccessToken Response
+     * <p/>
+     * Identifying Credentials Being Issued Throughout the Issuance Flow
+     * https://openid.net/specs/openid-4-verifiable-credential-issuance-1_0.html#section-3.3.4
+     * <p/>
+     * The property should not be used in Authorization or AccessToken requests.
+     */
+    @JsonProperty(CREDENTIAL_IDENTIFIERS)
+    private List<String> credentialIdentifiers;
+
     @JsonProperty(CLAIMS)
     private List<ClaimsDescription> claims;
+
+    @JsonProperty(CREDENTIALS_OFFER_ID)
+    private String credentialsOfferId;
 
     public String getCredentialConfigurationId() {
         return credentialConfigurationId;
@@ -45,6 +63,22 @@ public class OID4VCAuthorizationDetail extends AuthorizationDetailsJSONRepresent
 
     public void setCredentialConfigurationId(String credentialConfigurationId) {
         this.credentialConfigurationId = credentialConfigurationId;
+    }
+
+    public List<String> getCredentialIdentifiers() {
+        return credentialIdentifiers;
+    }
+
+    public void setCredentialIdentifiers(List<String> credentialIdentifiers) {
+        this.credentialIdentifiers = credentialIdentifiers;
+    }
+
+    public String getCredentialsOfferId() {
+        return credentialsOfferId;
+    }
+
+    public void setCredentialsOfferId(String credentialsOfferId) {
+        this.credentialsOfferId = credentialsOfferId;
     }
 
     public List<ClaimsDescription> getClaims() {
@@ -57,11 +91,28 @@ public class OID4VCAuthorizationDetail extends AuthorizationDetailsJSONRepresent
 
     @Override
     public String toString() {
-        return "OID4VCAuthorizationDetail {" +
-                " type='" + getType() + '\'' +
-                ", locations='" + getLocations() + '\'' +
-                ", credentialConfigurationId='" + credentialConfigurationId + '\'' +
-                ", claims=" + claims +
-                '}';
+        return JsonSerialization.valueAsString(this);
+    }
+
+    @Override
+    public OID4VCAuthorizationDetail clone() {
+        String encoded = JsonSerialization.valueAsString(this);
+        return JsonSerialization.valueFromString(encoded, OID4VCAuthorizationDetail.class);
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (o == null || getClass() != o.getClass()) return false;
+        if (!super.equals(o)) return false;
+        OID4VCAuthorizationDetail that = (OID4VCAuthorizationDetail) o;
+        return Objects.equals(credentialConfigurationId, that.credentialConfigurationId)
+                && Objects.equals(credentialIdentifiers, that.credentialIdentifiers)
+                && Objects.equals(credentialsOfferId, that.credentialsOfferId);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(super.hashCode(), credentialConfigurationId, credentialIdentifiers, credentialsOfferId);
     }
 }
