@@ -21,24 +21,29 @@ public class AuthorizationDetailsProcessorManager {
 
     private static final Logger logger = Logger.getLogger(AuthorizationDetailsProcessorManager.class);
 
-    public List<AuthorizationDetailsJSONRepresentation> processAuthorizationDetails(KeycloakSession session, UserSessionModel userSession, ClientSessionContext clientSessionCtx,
-                                                                          String authorizationDetailsParam) throws InvalidAuthorizationDetailsException {
-        return processAuthzDetailsImpl(session, authorizationDetailsParam,
+    private final KeycloakSession session;
+
+    public AuthorizationDetailsProcessorManager(KeycloakSession session) {
+        this.session = session;
+    }
+
+    public List<AuthorizationDetailsJSONRepresentation> processAuthorizationDetails(UserSessionModel userSession, ClientSessionContext clientSessionCtx,
+                                                                                    String authorizationDetailsParam) throws InvalidAuthorizationDetailsException {
+        return processAuthorizationDetailsInternal(authorizationDetailsParam,
                 (processor, authzDetail) -> processor.process(userSession, clientSessionCtx, authzDetail));
     }
 
 
-    public List<AuthorizationDetailsJSONRepresentation> processStoredAuthorizationDetails(KeycloakSession session, UserSessionModel userSession,
-                                                                                ClientSessionContext clientSessionCtx,
-                                                                                String authorizationDetailsParam) throws InvalidAuthorizationDetailsException {
-        return processAuthzDetailsImpl(session, authorizationDetailsParam,
+    public List<AuthorizationDetailsJSONRepresentation> processStoredAuthorizationDetails(UserSessionModel userSession,
+                                                                                          ClientSessionContext clientSessionCtx,
+                                                                                          String authorizationDetailsParam) throws InvalidAuthorizationDetailsException {
+        return processAuthorizationDetailsInternal(authorizationDetailsParam,
                 (processor, authzDetail) ->
-                        processor.processStoredAuthorizationDetails(userSession, clientSessionCtx, authzDetail)
-                );
+                        processor.processStoredAuthorizationDetails(userSession, clientSessionCtx, authzDetail));
     }
 
 
-    public List<AuthorizationDetailsJSONRepresentation> handleMissingAuthorizationDetails(KeycloakSession session, UserSessionModel userSession, ClientSessionContext clientSessionCtx) {
+    public List<AuthorizationDetailsJSONRepresentation> handleMissingAuthorizationDetails(UserSessionModel userSession, ClientSessionContext clientSessionCtx) {
         List<AuthorizationDetailsJSONRepresentation> allAuthzDetails = new ArrayList<>();
         session.getKeycloakSessionFactory()
                 .getProviderFactoriesStream(AuthorizationDetailsProcessor.class)
@@ -50,34 +55,42 @@ public class AuthorizationDetailsProcessorManager {
         return allAuthzDetails;
     }
 
+    public List<AuthorizationDetailsJSONRepresentation> validateAuthorizationDetail(String authorizationDetailsParam) {
+        return processAuthorizationDetailsInternal(authorizationDetailsParam, AuthorizationDetailsProcessor::validateAuthorizationDetail);
+    }
 
-    private List<AuthorizationDetailsJSONRepresentation> processAuthzDetailsImpl(KeycloakSession session, String authorizationDetailsParam,
-                                    BiFunction<AuthorizationDetailsProcessor<?>, AuthorizationDetailsJSONRepresentation, AuthorizationDetailsJSONRepresentation> function) throws InvalidAuthorizationDetailsException {
-        if (authorizationDetailsParam == null) {
-            return null;
+    @SuppressWarnings("unchecked")
+    public void afterAuthorizationDetailsProcessed(UserSessionModel userSession,
+                                                   ClientSessionContext clientSessionCtx,
+                                                   List<AuthorizationDetailsJSONRepresentation> authorizationDetailsResponse) throws InvalidAuthorizationDetailsException {
+        Map<String, AuthorizationDetailsProcessor<?>> processors = getAuthorizationDetailsProcessorMap();
+        for (AuthorizationDetailsJSONRepresentation authzDetailResponse : authorizationDetailsResponse) {
+            AuthorizationDetailsProcessor processor = findProcessorForAuthorizationDetails(processors, authzDetailResponse);
+            processor.afterAuthorizationDetailsProcessed(userSession, clientSessionCtx, authzDetailResponse.asSubtype(processor.getSupportedResponseJavaType()));
         }
+    }
 
-        List<AuthorizationDetailsJSONRepresentation> authzResponses = new ArrayList<>();
+    // Private ---------------------------------------------------------------------------------------------------------
+
+    private Map<String, AuthorizationDetailsProcessor<?>> getAuthorizationDetailsProcessorMap() {
+        return session.getKeycloakSessionFactory()
+                .getProviderFactoriesStream(AuthorizationDetailsProcessor.class)
+                .collect(Collectors.toMap(ProviderFactory::getId, factory -> (AuthorizationDetailsProcessor<?>) session.getProvider(AuthorizationDetailsProcessor.class, factory.getId())));
+    }
+
+    private List<AuthorizationDetailsJSONRepresentation> processAuthorizationDetailsInternal(String authorizationDetailsParam,
+                                                                                             BiFunction<AuthorizationDetailsProcessor<?>, AuthorizationDetailsJSONRepresentation, AuthorizationDetailsJSONRepresentation> function) throws InvalidAuthorizationDetailsException {
 
         List<AuthorizationDetailsJSONRepresentation> authzDetails = parseAuthorizationDetails(authorizationDetailsParam);
-
         if (authzDetails.isEmpty()) {
             throw new InvalidAuthorizationDetailsException("Authorization_Details parameter cannot be empty");
         }
 
-        Map<String, AuthorizationDetailsProcessor<?>> processors = getProcessors(session);
+        Map<String, AuthorizationDetailsProcessor<?>> processors = getAuthorizationDetailsProcessorMap();
 
+        List<AuthorizationDetailsJSONRepresentation> authzResponses = new ArrayList<>();
         for (AuthorizationDetailsJSONRepresentation authzDetail : authzDetails) {
-            if (authzDetail.getType() == null) {
-                throw new InvalidAuthorizationDetailsException("Authorization_Details parameter provided without type: " + authorizationDetailsParam);
-            }
-            AuthorizationDetailsProcessor<?> processor = processors.get(authzDetail.getType());
-            if (processor == null) {
-                String errorDetails = String.format("Unsupported type '%s' of authorization_details parameter supplied in the request. Supported values: %s",
-                        authzDetail.getType(), processors.keySet());
-                logger.warn(errorDetails);
-                throw new InvalidAuthorizationDetailsException(errorDetails);
-            }
+            AuthorizationDetailsProcessor<?> processor = findProcessorForAuthorizationDetails(processors, authzDetail);
             AuthorizationDetailsJSONRepresentation response = function.apply(processor, authzDetail);
             if (response != null) {
                 authzResponses.add(response);
@@ -89,19 +102,26 @@ public class AuthorizationDetailsProcessorManager {
         return authzResponses;
     }
 
-    private List<AuthorizationDetailsJSONRepresentation> parseAuthorizationDetails(String authorizationDetailsParam) {
-        try {
-            return JsonSerialization.readValue(authorizationDetailsParam, new TypeReference<>() {
-            });
-        } catch (Exception e) {
-            logger.warnf(e, "Invalid authorization_details format: %s", authorizationDetailsParam);
-            throw new InvalidAuthorizationDetailsException("Invalid authorization_details: " + authorizationDetailsParam);
+    private AuthorizationDetailsProcessor<?> findProcessorForAuthorizationDetails(Map<String, AuthorizationDetailsProcessor<?>> processors, AuthorizationDetailsJSONRepresentation authzDetail) {
+        if (authzDetail.getType() == null) {
+            throw new InvalidAuthorizationDetailsException("Authorization_Details parameter provided without type: " + authzDetail);
         }
+        AuthorizationDetailsProcessor<?> processor = processors.get(authzDetail.getType());
+        if (processor == null) {
+            String errorDetails = String.format("Unsupported type '%s' of authorization_details parameter supplied in the request. Supported values: %s",
+                    authzDetail.getType(), processors.keySet());
+            logger.warn(errorDetails);
+            throw new InvalidAuthorizationDetailsException(errorDetails);
+        }
+        return processor;
     }
 
-    private Map<String, AuthorizationDetailsProcessor<?>> getProcessors(KeycloakSession session) {
-        return session.getKeycloakSessionFactory()
-                .getProviderFactoriesStream(AuthorizationDetailsProcessor.class)
-                .collect(Collectors.toMap(ProviderFactory::getId, factory -> (AuthorizationDetailsProcessor<?>) session.getProvider(AuthorizationDetailsProcessor.class, factory.getId())));
+    private List<AuthorizationDetailsJSONRepresentation> parseAuthorizationDetails(String authorizationDetailsParam) {
+        try {
+            return JsonSerialization.readValue(authorizationDetailsParam, new TypeReference<>() {});
+        } catch (Exception e) {
+            logger.warnf(e, "Cannot parse authorization_details: %s", authorizationDetailsParam);
+            throw new InvalidAuthorizationDetailsException("Invalid authorization_details: " + authorizationDetailsParam);
+        }
     }
 }

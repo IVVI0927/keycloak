@@ -60,7 +60,7 @@ import org.hamcrest.MatcherAssert;
 import org.junit.jupiter.api.Test;
 
 import static org.keycloak.OID4VCConstants.OPENID_CREDENTIAL;
-import static org.keycloak.protocol.oid4vc.issuance.OID4VCIssuerEndpoint.DEFAULT_CODE_LIFESPAN_S;
+import static org.keycloak.protocol.oid4vc.issuance.OID4VCIssuerEndpoint.DEFAULT_CREDENTIAL_OFFER_LIFESPAN_S;
 import static org.keycloak.tests.oid4vc.OID4VCProofTestUtils.generateJwtProof;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -79,7 +79,7 @@ public abstract class OID4VCAuthorizationDetailsFlowPreAuthTestBase extends OID4
         AccessTokenResponse tokenResponse = oauthClient
                 .openid(false)
                 .scope(scopeName)
-                .doPasswordGrantRequest("john", "password");
+                .doPasswordGrantRequest("john", TEST_PASSWORD);
         assertEquals(HttpStatus.SC_OK, tokenResponse.getStatusCode());
         return tokenResponse.getAccessToken();
     }
@@ -628,7 +628,7 @@ public abstract class OID4VCAuthorizationDetailsFlowPreAuthTestBase extends OID4
 
         AccessTokenResponse response = oauth.client(OID4VCI_CLIENT_ID, "test-secret")
                 .scope(OAuth2Constants.SCOPE_OPENID)
-                .doPasswordGrantRequest("john", "password");
+                .doPasswordGrantRequest("john", TEST_PASSWORD);
         String accessToken = response.getAccessToken();
 
         UserInfoResponse userInfoResponse = oauth.doUserInfoRequest(accessToken);
@@ -696,9 +696,12 @@ public abstract class OID4VCAuthorizationDetailsFlowPreAuthTestBase extends OID4
 
     @Test
     public void testCompleteFlowWithExpiredCredentialOffer() throws Exception {
+        // Bigger accessToken lifespan to avoid same timeout like credential-offer (to enforce that accessToken is still valid in the credential-request, when credential-offer would be invalid)
+        testRealm.updateWithCleanup(r -> r.accessTokenLifespan(600));
+
         AccessTokenResponse tokenResponse = preAuthzCodeSuccessful();
         // Make sure that offer is expired
-        timeOffSet.set(DEFAULT_CODE_LIFESPAN_S + 10);
+        timeOffSet.set(DEFAULT_CREDENTIAL_OFFER_LIFESPAN_S + 10);
         assertFailedCredentialRequest(tokenResponse);
     }
 

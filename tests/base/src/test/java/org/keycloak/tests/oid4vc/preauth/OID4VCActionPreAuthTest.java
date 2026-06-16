@@ -11,7 +11,7 @@ import org.keycloak.testframework.events.EventAssertion;
 import org.keycloak.testframework.realm.ManagedUser;
 import org.keycloak.testframework.ui.annotations.InjectPage;
 import org.keycloak.testframework.ui.page.OID4VCCredentialOfferPage;
-import org.keycloak.tests.common.TestRealmUserConfig;
+import org.keycloak.tests.oid4vc.OID4VCActionTest;
 import org.keycloak.tests.oid4vc.OID4VCIssuerTestBase;
 import org.keycloak.tests.oid4vc.OID4VCTestContext;
 import org.keycloak.testsuite.util.oauth.AccessTokenResponse;
@@ -39,7 +39,7 @@ public class OID4VCActionPreAuthTest extends OID4VCIssuerTestBase {
     @InjectPage
     OID4VCCredentialOfferPage credentialOfferPage;
 
-    @InjectUser(config = TestRealmUserConfig.class)
+    @InjectUser(config = OID4VCActionTest.OID4VCTestUserConfig.class)
     ManagedUser user;
 
     OID4VCTestContext ctx;
@@ -63,7 +63,7 @@ public class OID4VCActionPreAuthTest extends OID4VCIssuerTestBase {
         oauth.loginForm()
                 .kcAction(getKcActionParameter(client.getClientId(), minimalJwtTypeCredentialConfigurationIdName, true))
                 .open();
-        oauth.fillLoginForm(user.getUsername(), "password");
+        oauth.fillLoginForm(user.getUsername(), TEST_PASSWORD);
 
         credentialOfferPage.assertCurrent();
         String credentialOfferUri = credentialOfferPage.getCredentialOfferUri();
@@ -107,7 +107,8 @@ public class OID4VCActionPreAuthTest extends OID4VCIssuerTestBase {
         String accessToken = wallet.validateHolderAccessToken(ctx, tokenResponse);
         assertNotNull(accessToken,"No accessToken");
 
-        assertNull(ctx.getAuthorizedCredentialIdentifier(),"Not expected to have credential identifier");
+        String credentialIdentifier = ctx.getAuthorizedCredentialIdentifier();
+        assertNotNull(credentialIdentifier,"Has authorized credential identifier");
 
         String credentialConfigId = ctx.getAuthorizedCredentialConfigurationId();
         assertEquals(minimalJwtTypeCredentialConfigurationIdName, credentialConfigId);
@@ -120,7 +121,7 @@ public class OID4VCActionPreAuthTest extends OID4VCIssuerTestBase {
 
         // Credential request
         CredentialResponse credResponse = wallet.credentialRequest(ctx, accessToken)
-                .credentialConfigurationId(credentialConfigId)
+                .credentialIdentifier(credentialIdentifier)
                 .send().getCredentialResponse();
 
         EventAssertion.assertSuccess(events.poll())

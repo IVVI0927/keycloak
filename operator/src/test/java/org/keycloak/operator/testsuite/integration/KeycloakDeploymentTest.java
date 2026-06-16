@@ -79,6 +79,7 @@ import static org.keycloak.operator.testsuite.utils.K8sUtils.waitForKeycloakToBe
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @DisabledIfApiServerTest
@@ -114,6 +115,14 @@ public class KeycloakDeploymentTest extends BaseOperatorTest {
         k8sclient.resource(kc).delete();
         Awaitility.await()
                 .untilAsserted(() -> assertThat(k8sclient.apps().statefulSets().inNamespace(namespace).withName(deploymentName).get()).isNull());
+
+        // check that the operator is not attempting to use telemetry
+        if (operatorDeployment == OperatorDeployment.remote) {
+            String log = k8sclient.apps().deployments().withName(BaseOperatorTest.KEYCLOAK_OPERATOR).getLog();
+            if (log != null) {
+                assertFalse(log.contains("opentelemetry"), "Should not mention opentelemetry " + log);
+            }
+        }
     }
 
     /**
@@ -567,8 +576,9 @@ public class KeycloakDeploymentTest extends BaseOperatorTest {
     }
 
     @Test
-    public void testConfigErrorLog() {
+    public void testConfigErrorLogUnoptimized() {
         var kc = getTestKeycloakDeployment(true);
+        kc.getSpec().setStartOptimized(false);
         kc.getSpec().setFeatureSpec(new FeatureSpecBuilder().addToEnabledFeatures("feature doesn't exist").build());
 
         deployKeycloak(k8sclient, kc, false);
@@ -580,7 +590,7 @@ public class KeycloakDeploymentTest extends BaseOperatorTest {
             CRAssert.assertKeycloakStatusCondition(current, KeycloakStatusCondition.READY, false);
             CRAssert.assertKeycloakStatusCondition(current, KeycloakStatusCondition.HAS_ERRORS, true, null).has(new Condition<>(
                     c -> c.getMessage().contains(String.format("Waiting for %s/%s-0 due to CrashLoopBackOff", k8sclient.getNamespace(), kc.getMetadata().getName()))
-                     && c.getMessage().contains("The following build time options have values"), "message"
+                     && c.getMessage().contains("'feature doesn't exist' is an unrecognized feature"), "message"
                     ));
         });
     }

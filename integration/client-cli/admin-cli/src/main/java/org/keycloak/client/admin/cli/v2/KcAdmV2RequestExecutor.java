@@ -49,6 +49,12 @@ class KcAdmV2RequestExecutor extends AbstractTargetAuthOptionsCmd {
     static final String API_VERSION = "v2";
     static final String DEFAULT_REALM = "master";
 
+    // Maps resource name to the JSON field that holds its ID, used to extract
+    // the path parameter from --file content when no positional <id> is given
+    private static final Map<String, String> RESOURCE_ID_FIELDS = Map.of(
+            "client", "clientId"
+    );
+
     @Spec CommandSpec spec;
     private final CommandDescriptor descriptor;
     private final VariantDescriptor variant;
@@ -57,6 +63,10 @@ class KcAdmV2RequestExecutor extends AbstractTargetAuthOptionsCmd {
         super();
         this.descriptor = descriptor;
         this.variant = variant;
+    }
+
+    private boolean isVariantParent() {
+        return variant == null && descriptor.hasVariants();
     }
 
     @Override
@@ -80,6 +90,67 @@ class KcAdmV2RequestExecutor extends AbstractTargetAuthOptionsCmd {
         }
     }
 
+    protected record RequestContext(ConfigData configData, String token) {}
+
+    protected final RequestContext prepareRequest() {
+        processOptions();
+
+        ConfigData configData = loadConfig();
+
+        // Apply CLI overrides onto config
+        if (server != null) {
+            configData.setServerUrl(server);
+        }
+        if (realm != null) {
+            configData.setRealm(realm);
+        }
+        if (externalToken != null) {
+            configData.setExternalToken(externalToken);
+        }
+
+        // Default realm to master if not set anywhere
+        if (configData.getRealm() == null) {
+            configData.setRealm(DEFAULT_REALM);
+        }
+
+        String v2Cmd = KcAdmMain.CMD + " " + KcAdmMain.V2_FLAG;
+
+        if (configData.getServerUrl() == null) {
+            throw new RuntimeException(
+                    "No server URL configured. Use --server or '" + v2Cmd + " config credentials' first.");
+        }
+        if (!configData.getServerUrl().startsWith("http://") && !configData.getServerUrl().startsWith("https://")) {
+            throw new RuntimeException(
+                    "Invalid server URL: " + configData.getServerUrl() + ". URL must start with http:// or https://");
+        }
+
+        setupTruststore(configData);
+
+        // Set fields so ensureAuthInfo/BaseConfigCredentialsCmd can use them
+        if (server == null) {
+            server = configData.getServerUrl();
+        }
+        if (realm == null) {
+            realm = configData.getRealm();
+        }
+
+        configData = ensureAuthInfo(configData);
+        configData = copyWithServerInfo(configData);
+
+        String token = null;
+        if (credentialsAvailable(configData)) {
+            token = ensureToken(configData);
+        }
+
+        String requestRealm = getTargetRealm(configData);
+        if (requestRealm == null) {
+            requestRealm = DEFAULT_REALM;
+        }
+        configData.setRealm(requestRealm);
+
+        return new RequestContext(configData, token);
+    }
+
     @Override
     public void run() {
         if (Globals.help) {
@@ -90,85 +161,22 @@ class KcAdmV2RequestExecutor extends AbstractTargetAuthOptionsCmd {
         PrintWriter out = spec.commandLine().getOut();
 
         try {
-            processOptions();
+            RequestContext ctx = prepareRequest();
 
-            ConfigData configData = loadConfig();
-
-            // Apply CLI overrides onto config
-            if (server != null) {
-                configData.setServerUrl(server);
-            }
-            if (realm != null) {
-                configData.setRealm(realm);
-            }
-            if (externalToken != null) {
-                configData.setExternalToken(externalToken);
-            }
-
-            // Default realm to master if not set anywhere
-            if (configData.getRealm() == null) {
-                configData.setRealm(DEFAULT_REALM);
-            }
-
-            String v2Cmd = KcAdmMain.CMD + " " + KcAdmMain.V2_FLAG;
-
-            if (configData.getServerUrl() == null) {
-                throw new RuntimeException(
-                        "No server URL configured. Use --server or '" + v2Cmd + " config credentials' first.");
-            }
-            if (!configData.getServerUrl().startsWith("http://") && !configData.getServerUrl().startsWith("https://")) {
-                throw new RuntimeException(
-                        "Invalid server URL: " + configData.getServerUrl() + ". URL must start with http:// or https://");
-            }
-
-            setupTruststore(configData);
-
-            // Set fields so ensureAuthInfo/BaseConfigCredentialsCmd can use them
-            if (server == null) {
-                server = configData.getServerUrl();
-            }
-            if (realm == null) {
-                realm = configData.getRealm();
-            }
-
-            configData = ensureAuthInfo(configData);
-            configData = copyWithServerInfo(configData);
-
-            String token = null;
-            if (credentialsAvailable(configData)) {
-                token = ensureToken(configData);
-            }
-
-            String requestRealm = getTargetRealm(configData);
-            if (requestRealm == null) {
-                requestRealm = DEFAULT_REALM;
-            }
-            configData.setRealm(requestRealm);
-
-            String url = buildUrl(configData);
             String body = buildRequestBody();
-
-            Headers headers = new Headers();
-            if (token != null) {
-                headers.add(HttpHeaders.AUTHORIZATION, "Bearer " + token);
+            if (body == null && isVariantParent()) {
+                throw new RuntimeException(
+                        "No file specified. Use -f/--file to provide a request body.");
             }
-            headers.add(HttpHeaders.ACCEPT, APPLICATION_JSON);
+            String url = buildUrl(ctx.configData(), body);
 
-            InputStream bodyStream = null;
-            if (body != null) {
-                String contentType = "PATCH".equals(descriptor.getHttpMethod())
-                        ? MERGE_PATCH_JSON : APPLICATION_JSON;
-                headers.add(HttpHeaders.CONTENT_TYPE, contentType);
-                bodyStream = new ByteArrayInputStream(body.getBytes(StandardCharsets.UTF_8));
-            }
+            String contentType = body != null
+                    ? ("PATCH".equals(descriptor.getHttpMethod()) ? MERGE_PATCH_JSON : APPLICATION_JSON)
+                    : null;
 
-            HeadersBodyStatus response = HttpUtil.doRequest(
-                    descriptor.getHttpMethod().toLowerCase(),
-                    url,
-                    new HeadersBody(headers, bodyStream),
-                    true);
+            HeadersBodyStatus response = executeRequest(descriptor.getHttpMethod().toLowerCase(), url, ctx.token(), body,
+                    contentType);
 
-            response.checkSuccess();
             String responseBody = response.getBody() != null ? readFully(response.getBody()) : "";
 
             if (!responseBody.isBlank()) {
@@ -184,25 +192,64 @@ class KcAdmV2RequestExecutor extends AbstractTargetAuthOptionsCmd {
         }
     }
 
-    private String buildUrl(ConfigData configData) {
+    protected final HeadersBodyStatus executeRequest(String method, String url, String token,
+                                               String body, String contentType) throws IOException {
+        Headers headers = new Headers();
+        if (token != null) {
+            headers.add(HttpHeaders.AUTHORIZATION, "Bearer " + token);
+        }
+        headers.add(HttpHeaders.ACCEPT, APPLICATION_JSON);
+
+        InputStream bodyStream = null;
+        if (body != null) {
+            headers.add(HttpHeaders.CONTENT_TYPE, contentType);
+            bodyStream = new ByteArrayInputStream(body.getBytes(StandardCharsets.UTF_8));
+        }
+
+        HeadersBodyStatus response = HttpUtil.doRequest(method, url, new HeadersBody(headers, bodyStream), true);
+        response.checkSuccess();
+        return response;
+    }
+
+    protected final String buildUrl(ConfigData configData, String body) {
         String path = descriptor.getPath()
                 .replace("{realmName}", HttpUtil.urlencode(configData.getRealm()))
                 .replace("{version}", API_VERSION);
 
         if (descriptor.isRequiresId()) {
             var positional = spec.commandLine().getParseResult().matchedPositional(0);
-            if (positional == null) {
-                throw new RuntimeException("Missing required ID argument");
+            final String id;
+            if (positional != null) {
+                id = positional.getValue();
+            } else {
+                id = extractIdFromBody(body);
             }
-            path = path.replace(KcAdmV2DescriptorBuilder.ID_PATH_PARAM, HttpUtil.urlencode(positional.getValue()));
+            path = path.replace(KcAdmV2DescriptorBuilder.ID_PATH_PARAM, HttpUtil.urlencode(id));
         }
 
         return configData.getServerUrl() + path;
     }
 
+    private String extractIdFromBody(String body) {
+        String idField = RESOURCE_ID_FIELDS.get(descriptor.getResourceName());
+        if (idField == null) {
+            throw new RuntimeException("Cannot extract '" + descriptor.getResourceName()
+                    + "' resource ID from file. Use a subcommand that accepts <id> instead.");
+        }
+        try {
+            JsonNode node = JsonSerialization.readValue(body, JsonNode.class);
+            JsonNode idNode = node.get(idField);
+            if (idNode == null || idNode.isNull() || idNode.asText().isBlank()) {
+                throw new RuntimeException("File does not contain required '" + idField + "' field");
+            }
+            return idNode.asText();
+        } catch (IOException e) {
+            throw new RuntimeException("Cannot parse JSON to extract ID: " + e.getMessage(), e);
+        }
+    }
+
     private String buildRequestBody() throws IOException {
-        String file = spec.commandLine().getParseResult()
-                .matchedOptionValue(KcAdmV2CommandBuilder.OPT_FILE, null);
+        String file = resolveFileOption();
 
         List<OptionDescriptor> options = variant != null
                 ? variant.getOptions() : descriptor.getOptions();
@@ -275,7 +322,21 @@ class KcAdmV2RequestExecutor extends AbstractTargetAuthOptionsCmd {
         return false;
     }
 
-    private String formatOutput(String json) {
+    private String resolveFileOption() {
+        String file = spec.commandLine().getParseResult().matchedOptionValue(KcAdmV2CommandBuilder.OPT_FILE, null);
+        CommandLine parent = spec.commandLine().getParent();
+        String parentFile = parent != null
+                ? parent.getParseResult().matchedOptionValue(KcAdmV2CommandBuilder.OPT_FILE, null)
+                : null;
+
+        if (file != null && parentFile != null) {
+            throw new RuntimeException(
+                    "Option -f/--file specified twice. Use it either before or after the subcommand, not both.");
+        }
+        return file != null ? file : parentFile;
+    }
+
+    protected final String formatOutput(String json) {
         try {
             var parseResult = spec.commandLine().getParseResult();
             boolean compressed = parseResult.matchedOptionValue(KcAdmV2CommandBuilder.OPT_COMPRESSED, false);

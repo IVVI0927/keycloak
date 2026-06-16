@@ -24,35 +24,48 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
+import org.keycloak.common.Profile;
+import org.keycloak.common.util.Time;
+import org.keycloak.models.ClientModel;
 import org.keycloak.models.ClientSessionContext;
+import org.keycloak.models.Constants;
+import org.keycloak.models.IssuedVerifiableCredentialModel;
 import org.keycloak.models.KeycloakSession;
+import org.keycloak.models.ModelException;
 import org.keycloak.models.RealmModel;
+import org.keycloak.models.UserModel;
 import org.keycloak.models.UserSessionModel;
 import org.keycloak.models.oid4vci.CredentialScopeModel;
 import org.keycloak.protocol.oid4vc.issuance.credentialoffer.CredentialOfferState;
 import org.keycloak.protocol.oid4vc.issuance.credentialoffer.CredentialOfferStorage;
 import org.keycloak.protocol.oid4vc.model.Claim;
 import org.keycloak.protocol.oid4vc.model.ClaimsDescription;
+import org.keycloak.protocol.oid4vc.model.CredentialIssuer;
 import org.keycloak.protocol.oid4vc.model.IssuerState;
 import org.keycloak.protocol.oid4vc.model.OID4VCAuthorizationDetail;
 import org.keycloak.protocol.oid4vc.model.SupportedCredentialConfiguration;
 import org.keycloak.protocol.oid4vc.utils.ClaimsPathPointer;
-import org.keycloak.protocol.oid4vc.utils.CredentialScopeModelUtils;
+import org.keycloak.protocol.oid4vc.utils.OID4VCUtil;
 import org.keycloak.protocol.oidc.rar.AuthorizationDetailsProcessor;
 import org.keycloak.protocol.oidc.rar.InvalidAuthorizationDetailsException;
 import org.keycloak.representations.AuthorizationDetailsJSONRepresentation;
+import org.keycloak.util.JsonSerialization;
+import org.keycloak.util.Strings;
 
 import org.jboss.logging.Logger;
 
 import static org.keycloak.OAuth2Constants.ISSUER_STATE;
 import static org.keycloak.OID4VCConstants.OPENID_CREDENTIAL;
+import static org.keycloak.models.oid4vci.CredentialScopeModel.VC_CONFIGURATION_ID;
 import static org.keycloak.protocol.oid4vc.issuance.OID4VCIssuerEndpoint.CREDENTIALS_OFFER_ID_ATTR;
-import static org.keycloak.protocol.oid4vc.utils.CredentialScopeModelUtils.findCredentialScopeModelByConfigurationId;
-import static org.keycloak.protocol.oid4vc.utils.CredentialScopeModelUtils.findCredentialScopeModelByName;
+import static org.keycloak.protocol.oid4vc.model.PreAuthorizedCodeGrant.PRE_AUTH_GRANT_TYPE;
+import static org.keycloak.protocol.oid4vc.utils.CredentialScopeUtils.findCredentialScopeModelByConfigurationId;
+import static org.keycloak.protocol.oid4vc.utils.CredentialScopeUtils.findCredentialScopeModelByName;
 import static org.keycloak.protocol.oidc.endpoints.AuthorizationEndpoint.LOGIN_SESSION_NOTE_ADDITIONAL_REQ_PARAMS_PREFIX;
 
 public class OID4VCAuthorizationDetailsProcessor implements AuthorizationDetailsProcessor<OID4VCAuthorizationDetail> {
     private static final Logger logger = Logger.getLogger(OID4VCAuthorizationDetailsProcessor.class);
+
     private final KeycloakSession session;
 
     public OID4VCAuthorizationDetailsProcessor(KeycloakSession session) {
@@ -76,34 +89,20 @@ public class OID4VCAuthorizationDetailsProcessor implements AuthorizationDetails
 
     @Override
     public OID4VCAuthorizationDetail process(UserSessionModel userSession, ClientSessionContext clientSessionCtx, AuthorizationDetailsJSONRepresentation authzDetail) {
-
-        // Retrieve authorization servers and issuer identifier for locations check
-        List<String> authorizationServers = OID4VCIssuerWellKnownProvider.getAuthorizationServers(session);
-        String issuerIdentifier = OID4VCIssuerWellKnownProvider.getIssuer(session.getContext());
-
-        // Get supported credential configuration from Issuer metadata
-        Map<String, SupportedCredentialConfiguration> supportedCredentials =
-                OID4VCIssuerWellKnownProvider.getSupportedCredentials(session);
-
-        OID4VCAuthorizationDetail requestedAuthDetail = authzDetail.asSubtype(OID4VCAuthorizationDetail.class);
-        validateAuthorizationDetail(requestedAuthDetail, supportedCredentials, authorizationServers, issuerIdentifier);
-        OID4VCAuthorizationDetail responseAuthDetail = buildAuthorizationDetail(clientSessionCtx, requestedAuthDetail);
-        return responseAuthDetail;
+        OID4VCAuthorizationDetail requestAuthDetail = authzDetail.asSubtype(OID4VCAuthorizationDetail.class);
+        validateAuthorizationDetail(requestAuthDetail);
+        return buildAuthorizationDetailResponse(clientSessionCtx, requestAuthDetail);
     }
 
-    private InvalidAuthorizationDetailsException getInvalidRequestException(String errorDescription) {
-        return new InvalidAuthorizationDetailsException("Invalid authorization_details: " + errorDescription);
-    }
+    @Override
+    public OID4VCAuthorizationDetail validateAuthorizationDetail(AuthorizationDetailsJSONRepresentation authzDetail) throws InvalidAuthorizationDetailsException {
 
-    /**
-     * Validates an authorization detail against supported credentials and other constraints.
-     *
-     * @param requestAuthDetail    the authorization detail to validate
-     * @param supportedCredentials map of supported credential configurations
-     * @param authorizationServers list of authorization servers
-     * @param issuerIdentifier     the issuer identifier
-     */
-    private void validateAuthorizationDetail(OID4VCAuthorizationDetail requestAuthDetail, Map<String, SupportedCredentialConfiguration> supportedCredentials, List<String> authorizationServers, String issuerIdentifier) {
+        OID4VCAuthorizationDetail requestAuthDetail = authzDetail.asSubtype(OID4VCAuthorizationDetail.class);
+
+        CredentialIssuer issuerMetadata = new OID4VCIssuerWellKnownProvider(session).getIssuerMetadata();
+        Map<String, SupportedCredentialConfiguration> supportedCredentials = issuerMetadata.getCredentialsSupported();
+        List<String> authorizationServers = issuerMetadata.getAuthorizationServers();
+        String issuerIdentifier = issuerMetadata.getCredentialIssuer();
 
         String type = requestAuthDetail.getType();
         String credentialConfigurationId = requestAuthDetail.getCredentialConfigurationId();
@@ -119,22 +118,29 @@ public class OID4VCAuthorizationDetailsProcessor implements AuthorizationDetails
         // If authorization_servers is present, locations must be set to issuer identifier
         if (authorizationServers != null && !authorizationServers.isEmpty()) {
             List<String> locations = requestAuthDetail.getLocations();
-            if (locations == null || locations.size()!=1 || !issuerIdentifier.equals(locations.get(0))) {
+            if (locations == null || locations.size() != 1 || !issuerIdentifier.equals(locations.get(0))) {
                 logger.warnf("Invalid locations field in authorization_details: %s, expected: %s", locations, issuerIdentifier);
                 throw getInvalidRequestException("locations=" + locations + ", expected=" + issuerIdentifier);
             }
         }
 
+        // credential_configuration_id is REQUIRED
+        if (Strings.isEmpty(credentialConfigurationId)) {
+            logger.warnf("Missing credential_configuration_id in authorization_details");
+            throw getInvalidRequestException("credential_configuration_id is required");
+        }
+
         // credential_identifiers not allowed
-        if (credentialIdentifiers != null && !credentialIdentifiers.isEmpty()) {
+        if (credentialIdentifiers != null) {
+            // we also reject an empty array of credential identifiers
             logger.warnf("Property credential_identifiers not allowed in authorization_details");
             throw getInvalidRequestException("credential_identifiers not allowed");
         }
 
-        // credential_configuration_id is REQUIRED
-        if (credentialConfigurationId == null) {
-            logger.warnf("Missing credential_configuration_id in authorization_details");
-            throw getInvalidRequestException("credential_configuration_id is required");
+        // Issued credential ID not allowed
+        if (requestAuthDetail.getIssuedCredentialId() != null) {
+            logger.warnf("Property '%s' not allowed in authorization_details", OID4VCAuthorizationDetail.ISSUED_CREDENTIAL_ID);
+            throw getInvalidRequestException("Issued credential ID not allowed in authorization details");
         }
 
         // Validate credential_configuration_id
@@ -148,6 +154,14 @@ public class OID4VCAuthorizationDetailsProcessor implements AuthorizationDetails
         if (claims != null && !claims.isEmpty()) {
             validateClaims(claims, credConfig);
         }
+
+        return requestAuthDetail;
+    }
+
+    // Private ---------------------------------------------------------------------------------------------------------
+
+    private InvalidAuthorizationDetailsException getInvalidRequestException(String errorDescription) {
+        return new InvalidAuthorizationDetailsException("Invalid authorization_details: " + errorDescription);
     }
 
     /**
@@ -202,7 +216,7 @@ public class OID4VCAuthorizationDetailsProcessor implements AuthorizationDetails
         }
     }
 
-    private OID4VCAuthorizationDetail buildAuthorizationDetail(ClientSessionContext clientSessionCtx, OID4VCAuthorizationDetail requestAuthDetail) {
+    private OID4VCAuthorizationDetail buildAuthorizationDetailResponse(ClientSessionContext clientSessionCtx, OID4VCAuthorizationDetail requestAuthDetail) {
 
         String requestedCredentialConfigurationId = requestAuthDetail.getCredentialConfigurationId();
         if (requestedCredentialConfigurationId == null) {
@@ -230,7 +244,12 @@ public class OID4VCAuthorizationDetailsProcessor implements AuthorizationDetails
         if (credScope == null)
             throw getInvalidRequestException("Cannot find or access client scope for credential_configuration_id: " + requestedCredentialConfigurationId);
 
-        OID4VCAuthorizationDetail responseAuthDetail = CredentialScopeModelUtils.buildOID4VCAuthorizationDetail(credScope, null);
+        UserModel user = clientSessionCtx.getClientSession().getUserSession().getUser();
+        if (!OID4VCUtil.hasVerifiableCredential(session, user, credScope)) {
+            throw getInvalidRequestException("User '" + user.getUsername() + "' does not have verifiable credential '" + credScope.getCredentialConfigurationId() + "'.");
+        }
+
+        OID4VCAuthorizationDetail responseAuthDetail = generateResponseAuthorizationDetails(credScope, null);
         responseAuthDetail.setClaims(requestAuthDetail.getClaims());
 
         return responseAuthDetail;
@@ -258,16 +277,21 @@ public class OID4VCAuthorizationDetailsProcessor implements AuthorizationDetails
         for (String scope : scopeParam.split(" ")) {
             CredentialScopeModel credScope = findCredentialScopeModelByName(realmModel, clientSessionCtx::getClientScopesStream, scope);
             if (credScope != null) {
+                if (!OID4VCUtil.hasVerifiableCredential(session, userSession.getUser(), credScope)) {
+                    throw getInvalidRequestException("User '" + userSession.getUser().getUsername() + "' does not have verifiable credential '" + credScope.getCredentialConfigurationId() + "'.");
+                }
 
                 // Generate `authorization_details` for the AccessToken Response
                 // This is the same logic as we use when a credential offer is created
                 //
-                OID4VCAuthorizationDetail authDetail = CredentialScopeModelUtils.buildOID4VCAuthorizationDetail(credScope, null);
+                OID4VCAuthorizationDetail authDetail = generateResponseAuthorizationDetails(credScope, null);
                 authorizationDetails.add(authDetail);
             }
         }
 
-        if (authorizationDetails.isEmpty()) {
+        if (!authorizationDetails.isEmpty()) {
+            logger.debugf("Generated authorization_details: %s", JsonSerialization.valueAsString(authorizationDetails));
+        } else {
             logger.debug("No generated authorization_details");
         }
         return authorizationDetails;
@@ -292,8 +316,74 @@ public class OID4VCAuthorizationDetailsProcessor implements AuthorizationDetails
     }
 
     @Override
+    public void afterAuthorizationDetailsProcessed(UserSessionModel userSession, ClientSessionContext clientSessionCtx, OID4VCAuthorizationDetail oid4vcAuthzDetailResponse) {
+        String credentialConfigId = oid4vcAuthzDetailResponse.getCredentialConfigurationId();
+        CredentialScopeModel credentialScope = findCredentialScopeModelByConfigurationId(session.getContext().getRealm(), clientSessionCtx::getClientScopesStream, credentialConfigId);
+
+        if (credentialScope == null && Profile.isFeatureEnabled(Profile.Feature.OID4VC_VCI_PREAUTH_CODE) && PRE_AUTH_GRANT_TYPE.equals(clientSessionCtx.getAttribute(Constants.GRANT_TYPE, String.class))) {
+            // For now, for pre-authorized grant we allow fallback to all client scopes of the realm, but this needs to be double-check before pre-authorization grant
+            // is going to be supported feature. Details: https://github.com/keycloak/keycloak/issues/49965
+            credentialScope = findCredentialScopeModelByConfigurationId(session.getContext().getRealm(), session.getContext().getRealm()::getClientScopesStream, credentialConfigId);
+        }
+
+        if (credentialScope == null) {
+            throw new InvalidAuthorizationDetailsException("Cannot find credential scope for credential configuration ID: " + credentialConfigId);
+        }
+
+        // Create issued-credential and set it's ID in authorization_details
+        IssuedVerifiableCredentialModel issuedCredential = createIssuedVerifiableCredential(userSession.getUser(), clientSessionCtx.getClientSession().getClient(), credentialScope);
+        oid4vcAuthzDetailResponse.setIssuedCredentialId(issuedCredential.getId());
+    }
+
+    @Override
     public void close() {
         // No cleanup needed
+    }
+
+    public OID4VCAuthorizationDetail generateResponseAuthorizationDetails(CredentialScopeModel credScope, String credOffersId) {
+
+        OID4VCAuthorizationDetail authDetail = new OID4VCAuthorizationDetail();
+        authDetail.setCredentialsOfferId(credOffersId);
+        authDetail.setType(OPENID_CREDENTIAL);
+
+        String credConfigId = Optional.ofNullable(credScope.getCredentialConfigurationId())
+                .orElseThrow(() -> new IllegalStateException("No " + VC_CONFIGURATION_ID + " in client scope: " + credScope.getName()));
+
+        authDetail.setCredentialConfigurationId(credConfigId);
+
+        // The AccessToken Response should have authorization_details when ...
+        //
+        //  * provided in Authorization Request
+        //  * provided in AccessToken Request
+        //  * defined credential identifiers
+        //
+        // https://gitlab.com/openid/conformance-suite/-/work_items/1724
+
+        String credIdentifier = credScope.getCredentialIdentifier();
+        if (Strings.isEmpty(credIdentifier)) {
+            credIdentifier = credConfigId + "_0000";
+        }
+        authDetail.setCredentialIdentifiers(List.of(credIdentifier));
+
+        return authDetail;
+    }
+
+
+    protected IssuedVerifiableCredentialModel createIssuedVerifiableCredential(UserModel userModel, ClientModel clientModel, CredentialScopeModel credentialScope) {
+        String credentialScopeName = credentialScope.getName();
+        try {
+            IssuedVerifiableCredentialModel model = new IssuedVerifiableCredentialModel(userModel.getId(), credentialScopeName, clientModel.getId());
+
+            long issuedAt = Time.currentTimeMillis();
+            model.setIssuedAt(issuedAt);
+            model.setExpiresAt(issuedAt + (credentialScope.getExpiryInSeconds() * 1000));
+
+            logger.debugf("Created VC issuance: user=%s, client=%s, type=%s", userModel.getUsername(), clientModel.getClientId(), credentialScopeName);
+
+            return session.users().addIssuedVerifiableCredential(model);
+        } catch (Exception e) {
+            throw new ModelException(String.format("Failed to create VC issuance for user=%s, client=%s, type=%s", userModel.getUsername(), clientModel.getClientId(), credentialScopeName), e);
+        }
     }
 
     // Private ---------------------------------------------------------------------------------------------------------
@@ -319,6 +409,13 @@ public class OID4VCAuthorizationDetailsProcessor implements AuthorizationDetails
             CredentialOfferStorage offerStorage = session.getProvider(CredentialOfferStorage.class);
             offerState = Optional.ofNullable(offerStorage.getOfferStateById(credOfferId))
                     .orElseThrow(() -> new IllegalStateException("No credential offer state for: " + auxCredOfferId));
+
+            // Check same login client as the client for which the credential offer is target (in case of credential offer target for specific client only)
+            String offerClientId = offerState.getTargetClientId();
+            String loginClientId = clientSessionCtx.getClientSession().getClient().getClientId();
+            if (offerClientId != null && !offerClientId.equals(loginClientId)) {
+                throw new IllegalStateException("Credential offer target client '" + offerClientId + "' different from login client '" + loginClientId + "'");
+            }
         }
 
         return offerState;

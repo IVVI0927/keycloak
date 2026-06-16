@@ -51,14 +51,18 @@ public interface AuthorizationDetailsProcessor<ADR extends AuthorizationDetailsJ
     Class<ADR> getSupportedResponseJavaType();
 
     /**
+     * Validates an authorization detail against supported credentials and other constraints.
+     */
+    ADR validateAuthorizationDetail(AuthorizationDetailsJSONRepresentation authzDetail) throws InvalidAuthorizationDetailsException;
+
+    /**
      * Processes the authorization_details parameter and returns a response if this processor
      * is able to handle the given authorization_details parameter.
      *
      * @param userSession                   the user session
      * @param clientSessionCtx              the client session context
      * @param authorizationDetailsMember the authorization_details member (usually one member from the list) sent in the "authorization_details" request parameter
-     * @return authorization details response if this processor can handle the parameter,
-     * null if the parameter is incompatible with this processor
+     * @return authorization details response if this processor can handle the parameter, null if the parameter is incompatible with this processor
      */
     ADR process(UserSessionModel userSession,
                 ClientSessionContext clientSessionCtx,
@@ -82,12 +86,22 @@ public interface AuthorizationDetailsProcessor<ADR extends AuthorizationDetailsJ
      * @param userSession       the user session
      * @param clientSessionCtx  the client session context
      * @param storedAuthDetailsMember the parsed member (usually one member of the list) from the authorization_details parameter that were stored during the authorization request
-     * @return authorization details response if this processor can handle the stored authorization_details,
-     * null if the processor cannot handle the stored authorization_details
+     * @return authorization details response if this processor can handle the stored authorization_details, null if the processor cannot handle the stored authorization_details
      */
     ADR processStoredAuthorizationDetails(UserSessionModel userSession,
                                           ClientSessionContext clientSessionCtx,
                                           AuthorizationDetailsJSONRepresentation storedAuthDetailsMember) throws InvalidAuthorizationDetailsException;
+
+    /**
+     * Hook method called after authorization_details are processed and before the token response is created.
+     * This allows authorization details processors to perform post-processing actions (e.g., creating state objects).
+     *
+     * @param userSession      the user session
+     * @param clientSessionCtx the client session context
+     * @param authorizationDetailsResponse The response object of the proper type, which is supposed to be processed by this processor.
+     */
+    void afterAuthorizationDetailsProcessed(UserSessionModel userSession, ClientSessionContext clientSessionCtx,
+                                            ADR authorizationDetailsResponse);
 
     /**
      * @param authzDetailsResponse all the authorizationDetails. May contain also authorizationDetails entries, with different "type" than the type understandable by this processor

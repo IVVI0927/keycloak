@@ -99,6 +99,7 @@ public class OIDCLoginProtocol implements LoginProtocol {
     public static final String CLAIMS_PARAM = "claims";
     public static final String ACR_PARAM = "acr_values";
     public static final String ID_TOKEN_HINT = "id_token_hint";
+    public static final String CONSENT_NOTE = "session_consent";
 
     public static final String LOGOUT_STATE_PARAM = "OIDC_LOGOUT_STATE_PARAM";
     public static final String LOGOUT_REDIRECT_URI = "OIDC_LOGOUT_REDIRECT_URI";
@@ -121,6 +122,7 @@ public class OIDCLoginProtocol implements LoginProtocol {
     public static final String CLIENT_SECRET_JWT = "client_secret_jwt";
     public static final String PRIVATE_KEY_JWT = "private_key_jwt";
     public static final String TLS_CLIENT_AUTH = "tls_client_auth";
+    public static final String ATTEST_JWT_CLIENT_AUTH = "attest_jwt_client_auth";
 
     /**
      * This is just for legacy setups which expect an unencoded, non-RFC6749 compliant client secret send from Keycloak to an IdP.
@@ -436,7 +438,7 @@ public class OIDCLoginProtocol implements LoginProtocol {
             checker.checkResponseType();
             checker.checkRedirectUri();
         } catch (AuthorizationEndpointChecker.AuthorizationCheckException ex) {
-            ex.throwAsErrorPageException(null);
+            checker.throwAsErrorPageException(null, ex);
         }
 
         setupResponseTypeAndMode(clientData.getResponseType(), clientData.getResponseMode());

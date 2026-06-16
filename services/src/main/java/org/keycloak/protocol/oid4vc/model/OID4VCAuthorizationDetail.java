@@ -37,6 +37,12 @@ public class OID4VCAuthorizationDetail extends AuthorizationDetailsJSONRepresent
     public static final String CLAIMS = "claims";
     public static final String CREDENTIALS_OFFER_ID = "credentials_offer_id";
 
+    /**
+     * Access token (and refresh token) claim with reference to the issued-credential ID. Can be used to link issued-credential
+     * with token to be able to check at credential-request (or refresh-token request) if particular issued-credential still exists
+     */
+    public static final String ISSUED_CREDENTIAL_ID = "iss_cred_id";
+
     @JsonProperty(CREDENTIAL_CONFIGURATION_ID)
     private String credentialConfigurationId;
 
@@ -56,6 +62,9 @@ public class OID4VCAuthorizationDetail extends AuthorizationDetailsJSONRepresent
 
     @JsonProperty(CREDENTIALS_OFFER_ID)
     private String credentialsOfferId;
+
+    @JsonProperty(ISSUED_CREDENTIAL_ID)
+    private String issuedCredentialId;
 
     public String getCredentialConfigurationId() {
         return credentialConfigurationId;
@@ -81,17 +90,20 @@ public class OID4VCAuthorizationDetail extends AuthorizationDetailsJSONRepresent
         this.credentialsOfferId = credentialsOfferId;
     }
 
+    public String getIssuedCredentialId() {
+        return issuedCredentialId;
+    }
+
+    public void setIssuedCredentialId(String issuedCredentialId) {
+        this.issuedCredentialId = issuedCredentialId;
+    }
+
     public List<ClaimsDescription> getClaims() {
         return claims;
     }
 
     public void setClaims(List<ClaimsDescription> claims) {
         this.claims = claims;
-    }
-
-    @Override
-    public String toString() {
-        return JsonSerialization.valueAsString(this);
     }
 
     @Override
@@ -114,5 +126,10 @@ public class OID4VCAuthorizationDetail extends AuthorizationDetailsJSONRepresent
     @Override
     public int hashCode() {
         return Objects.hash(super.hashCode(), credentialConfigurationId, credentialIdentifiers, credentialsOfferId);
+    }
+
+    @Override
+    public String toString() {
+        return JsonSerialization.valueAsString(this);
     }
 }
